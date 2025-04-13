@@ -1,0 +1,1829 @@
+// ------------------------------------------------------
+// STRUCTURE DU MODULE DE GESTION DES DOSSIERS ÉTUDIANTS
+// ------------------------------------------------------
+
+// Modèles de données (models/)
+// studentModel.js - Modèle principal pour les données étudiantes
+const mongoose = require('mongoose');
+const Schema = mongoose.Schema;
+
+// Définition du schéma pour les documents
+const DocumentSchema = new Schema({
+  name: { type: String, required: true },
+  type: { type: String, required: true },
+  status: { 
+    type: String, 
+    enum: ['pending', 'approved', 'rejected', 'needs_revision'],
+    default: 'pending'
+  },
+  fileUrl: { type: String },
+  uploadDate: { type: Date, default: Date.now },
+  comments: [{ 
+    text: String, 
+    author: { type: Schema.Types.ObjectId, ref: 'User' },
+    date: { type: Date, default: Date.now }
+  }],
+  isRequired: { type: Boolean, default: true }
+});
+
+// Définition du schéma pour les étapes du workflow
+const WorkflowStepSchema = new Schema({
+  name: { type: String, required: true },
+  description: String,
+  order: { type: Number, required: true },
+  status: { 
+    type: String, 
+    enum: ['pending', 'in_progress', 'completed', 'blocked'],
+    default: 'pending'
+  },
+  startDate: Date,
+  completionDate: Date,
+  responsibleStaff: { type: Schema.Types.ObjectId, ref: 'User' },
+  requiredDocuments: [{ type: Schema.Types.ObjectId, ref: 'Document' }]
+});
+
+// Schéma principal pour les étudiants
+const StudentFileSchema = new Schema({
+  studentNumber: { 
+    type: String, 
+    required: true,
+    unique: true,
+    index: true
+  },
+  personalInfo: {
+    firstName: { type: String, required: true },
+    lastName: { type: String, required: true },
+    email: { 
+      type: String, 
+      required: true,
+      unique: true,
+      validate: {
+        validator: function(v) {
+          return /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/.test(v);
+        },
+        message: props => `${props.value} n'est pas une adresse email valide!`
+      }
+    },
+    phone: String,
+    dateOfBirth: Date,
+    nationality: String,
+    address: {
+      street: String,
+      city: String,
+      postalCode: String,
+      country: String
+    }
+  },
+  academicInfo: {
+    currentProgram: String,
+    currentInstitution: String,
+    targetProgram: String,
+    targetInstitution: String,
+    academicLevel: {
+      type: String,
+      enum: ['bachelor', 'master', 'doctorate', 'other']
+    },
+    yearsOfStudy: Number,
+    gpa: Number
+  },
+  exchangeInfo: {
+    exchangeType: {
+      type: String,
+      enum: ['semester_abroad', 'double_degree', 'full_program', 'summer_school', 'internship']
+    },
+    startDate: Date,
+    endDate: Date,
+    destinationCountry: String,
+    status: {
+      type: String,
+      enum: ['draft', 'submitted', 'in_progress', 'accepted', 'rejected', 'completed'],
+      default: 'draft'
+    }
+  },
+  documents: [DocumentSchema],
+  workflow: {
+    template: { type: Schema.Types.ObjectId, ref: 'WorkflowTemplate' },
+    currentStep: { type: Number, default: 0 },
+    steps: [WorkflowStepSchema]
+  },
+  notes: [{
+    text: String,
+    author: { type: Schema.Types.ObjectId, ref: 'User' },
+    date: { type: Date, default: Date.now },
+    isPrivate: { type: Boolean, default: false }
+  }],
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+  lastActivity: { type: Date, default: Date.now }
+}, {
+  timestamps: true
+});
+
+// Index pour améliorer les performances de recherche
+StudentFileSchema.index({ 'personalInfo.firstName': 'text', 'personalInfo.lastName': 'text' });
+StudentFileSchema.index({ 'exchangeInfo.status': 1 });
+StudentFileSchema.index({ 'workflow.currentStep': 1 });
+
+// Middleware pre-save pour mettre à jour lastActivity
+StudentFileSchema.pre('save', function(next) {
+  this.lastActivity = new Date();
+  next();
+});
+
+// Méthodes du modèle
+StudentFileSchema.methods.advanceWorkflow = async function() {
+  if (this.workflow.currentStep < this.workflow.steps.length - 1) {
+    this.workflow.currentStep += 1;
+    this.workflow.steps[this.workflow.currentStep].status = 'in_progress';
+    this.workflow.steps[this.workflow.currentStep].startDate = new Date();
+    await this.save();
+    return true;
+  }
+  return false;
+};
+
+// Modèle pour les templates de workflow
+const WorkflowTemplateSchema = new Schema({
+  name: { type: String, required: true },
+  description: String,
+  steps: [{
+    name: String,
+    description: String,
+    order: Number,
+    requiredDocumentTypes: [String],
+    estimatedDuration: Number // en jours
+  }],
+  isActive: { type: Boolean, default: true },
+  createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+const Student = mongoose.model('Student', StudentFileSchema);
+const WorkflowTemplate = mongoose.model('WorkflowTemplate', WorkflowTemplateSchema);
+
+module.exports = { Student, WorkflowTemplate };
+
+// --------------------------------------
+// CONTRÔLEURS (controllers/)
+// --------------------------------------
+
+// studentController.js - Logique pour la gestion des étudiants
+const { Student, WorkflowTemplate } = require('../models/studentModel');
+const { validateStudentData, validateDocumentUpload } = require('../utils/validators');
+const { createAuditLog } = require('../utils/auditLogger');
+const { NotFoundError, ValidationError } = require('../utils/errors');
+
+// Création d'un nouveau dossier étudiant
+exports.createStudentFile = async (req, res, next) => {
+  try {
+    const { personalInfo, academicInfo, exchangeInfo, workflowTemplateId } = req.body;
+    
+    // Validation des données
+    const validationResult = validateStudentData(req.body);
+    if (!validationResult.isValid) {
+      throw new ValidationError(validationResult.errors);
+    }
+    
+    // Génération du numéro étudiant
+    const studentNumber = `DEI-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 1000)}`;
+    
+    // Récupération du template de workflow si spécifié
+    let workflowData = { steps: [], currentStep: 0 };
+    if (workflowTemplateId) {
+      const template = await WorkflowTemplate.findById(workflowTemplateId);
+      if (!template) {
+        throw new NotFoundError('Template de workflow non trouvé');
+      }
+      
+      // Création des étapes du workflow basées sur le template
+      workflowData = {
+        template: template._id,
+        steps: template.steps.map(step => ({
+          name: step.name,
+          description: step.description,
+          order: step.order,
+          status: step.order === 0 ? 'in_progress' : 'pending',
+          startDate: step.order === 0 ? new Date() : null,
+          requiredDocuments: []
+        })),
+        currentStep: 0
+      };
+    }
+    
+    // Création du dossier étudiant
+    const student = new Student({
+      studentNumber,
+      personalInfo,
+      academicInfo,
+      exchangeInfo,
+      workflow: workflowData,
+      documents: [],
+      notes: [{
+        text: 'Dossier créé',
+        author: req.user._id,
+        date: new Date()
+      }]
+    });
+    
+    await student.save();
+    
+    // Journalisation de l'action
+    await createAuditLog({
+      action: 'CREATE_STUDENT_FILE',
+      performedBy: req.user._id,
+      targetResource: student._id,
+      details: { studentNumber }
+    });
+    
+    return res.status(201).json({
+      success: true,
+      data: student
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Récupération d'un dossier étudiant par ID
+exports.getStudentFile = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    
+    const student = await Student.findById(id)
+      .populate('workflow.template')
+      .populate('workflow.steps.responsibleStaff', 'firstName lastName email');
+      
+    if (!student) {
+      throw new NotFoundError('Dossier étudiant non trouvé');
+    }
+    
+    return res.status(200).json({
+      success: true,
+      data: student
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Mise à jour d'un dossier étudiant
+exports.updateStudentFile = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+    
+    // Validation des données
+    const validationResult = validateStudentData(updateData, true);
+    if (!validationResult.isValid) {
+      throw new ValidationError(validationResult.errors);
+    }
+    
+    const student = await Student.findById(id);
+    if (!student) {
+      throw new NotFoundError('Dossier étudiant non trouvé');
+    }
+    
+    // Mise à jour des champs modifiables
+    if (updateData.personalInfo) {
+      Object.assign(student.personalInfo, updateData.personalInfo);
+    }
+    
+    if (updateData.academicInfo) {
+      Object.assign(student.academicInfo, updateData.academicInfo);
+    }
+    
+    if (updateData.exchangeInfo) {
+      Object.assign(student.exchangeInfo, updateData.exchangeInfo);
+    }
+    
+    if (updateData.notes) {
+      // Ajouter une nouvelle note
+      student.notes.push({
+        text: updateData.notes.text,
+        author: req.user._id,
+        date: new Date(),
+        isPrivate: updateData.notes.isPrivate || false
+      });
+    }
+    
+    await student.save();
+    
+    // Journalisation de l'action
+    await createAuditLog({
+      action: 'UPDATE_STUDENT_FILE',
+      performedBy: req.user._id,
+      targetResource: student._id,
+      details: { updatedFields: Object.keys(updateData) }
+    });
+    
+    return res.status(200).json({
+      success: true,
+      data: student
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Gestion des documents
+exports.uploadDocument = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { name, type, isRequired } = req.body;
+    const fileUrl = req.file ? req.file.path : null;
+    
+    // Validation des données
+    const validationResult = validateDocumentUpload(req.body, req.file);
+    if (!validationResult.isValid) {
+      throw new ValidationError(validationResult.errors);
+    }
+    
+    const student = await Student.findById(id);
+    if (!student) {
+      throw new NotFoundError('Dossier étudiant non trouvé');
+    }
+    
+    // Ajout du document
+    student.documents.push({
+      name,
+      type,
+      status: 'pending',
+      fileUrl,
+      uploadDate: new Date(),
+      isRequired: isRequired || true,
+      comments: [{
+        text: 'Document ajouté',
+        author: req.user._id,
+        date: new Date()
+      }]
+    });
+    
+    await student.save();
+    
+    // Journalisation de l'action
+    await createAuditLog({
+      action: 'UPLOAD_DOCUMENT',
+      performedBy: req.user._id,
+      targetResource: student._id,
+      details: { documentName: name, documentType: type }
+    });
+    
+    return res.status(200).json({
+      success: true,
+      data: student.documents[student.documents.length - 1]
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Mise à jour du statut d'un document
+exports.updateDocumentStatus = async (req, res, next) => {
+  try {
+    const { studentId, documentId } = req.params;
+    const { status, comment } = req.body;
+    
+    const student = await Student.findById(studentId);
+    if (!student) {
+      throw new NotFoundError('Dossier étudiant non trouvé');
+    }
+    
+    const document = student.documents.id(documentId);
+    if (!document) {
+      throw new NotFoundError('Document non trouvé');
+    }
+    
+    // Mise à jour du statut
+    document.status = status;
+    
+    // Ajout d'un commentaire si fourni
+    if (comment) {
+      document.comments.push({
+        text: comment,
+        author: req.user._id,
+        date: new Date()
+      });
+    }
+    
+    await student.save();
+    
+    // Journalisation de l'action
+    await createAuditLog({
+      action: 'UPDATE_DOCUMENT_STATUS',
+      performedBy: req.user._id,
+      targetResource: student._id,
+      details: { documentId, newStatus: status }
+    });
+    
+    return res.status(200).json({
+      success: true,
+      data: document
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Progression dans le workflow
+exports.advanceWorkflow = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    
+    const student = await Student.findById(id);
+    if (!student) {
+      throw new NotFoundError('Dossier étudiant non trouvé');
+    }
+    
+    // Vérifier si l'étape actuelle est complétée
+    const currentStep = student.workflow.steps[student.workflow.currentStep];
+    if (currentStep.status !== 'completed') {
+      throw new ValidationError('L\'étape actuelle doit être complétée avant de passer à la suivante');
+    }
+    
+    // Avancer dans le workflow
+    const advanced = await student.advanceWorkflow();
+    if (!advanced) {
+      throw new ValidationError('Impossible d\'avancer dans le workflow : dernière étape atteinte');
+    }
+    
+    // Journalisation de l'action
+    await createAuditLog({
+      action: 'ADVANCE_WORKFLOW',
+      performedBy: req.user._id,
+      targetResource: student._id,
+      details: { 
+        previousStep: student.workflow.currentStep - 1,
+        newStep: student.workflow.currentStep
+      }
+    });
+    
+    return res.status(200).json({
+      success: true,
+      data: student.workflow
+    });
+    
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --------------------------------------
+// ROUTES (routes/)
+// --------------------------------------
+
+// studentRoutes.js - Définition des routes pour la gestion des étudiants
+const express = require('express');
+const router = express.Router();
+const studentController = require('../controllers/studentController');
+const { authenticateUser, authorizeRole } = require('../middleware/auth');
+const { uploadStudentDocument } = require('../middleware/fileUpload');
+const { validateRequest } = require('../middleware/validators');
+
+// Routes protégées par authentification
+router.use(authenticateUser);
+
+// Création d'un nouveau dossier étudiant
+router.post(
+  '/',
+  authorizeRole(['admin', 'coordinator']),
+  validateRequest('createStudent'),
+  studentController.createStudentFile
+);
+
+// Récupération d'un dossier étudiant
+router.get(
+  '/:id',
+  studentController.getStudentFile
+);
+
+// Mise à jour d'un dossier étudiant
+router.patch(
+  '/:id',
+  validateRequest('updateStudent'),
+  studentController.updateStudentFile
+);
+
+// Recherche de dossiers étudiants
+router.get(
+  '/',
+  studentController.searchStudentFiles
+);
+
+// Gestion des documents
+router.post(
+  '/:id/documents',
+  uploadStudentDocument.single('document'),
+  validateRequest('uploadDocument'),
+  studentController.uploadDocument
+);
+
+// Mise à jour du statut d'un document
+router.patch(
+  '/:studentId/documents/:documentId',
+  authorizeRole(['admin', 'coordinator', 'staff']),
+  validateRequest('updateDocumentStatus'),
+  studentController.updateDocumentStatus
+);
+
+// Gestion du workflow
+router.post(
+  '/:id/workflow/advance',
+  authorizeRole(['admin', 'coordinator']),
+  studentController.advanceWorkflow
+);
+
+router.patch(
+  '/:id/workflow/steps/:stepId',
+  authorizeRole(['admin', 'coordinator', 'staff']),
+  validateRequest('updateWorkflowStep'),
+  studentController.updateWorkflowStep
+);
+
+module.exports = router;
+
+// --------------------------------------
+// SERVICE DE WORKFLOW (services/workflowService.js)
+// --------------------------------------
+
+const { WorkflowTemplate, Student } = require('../models/studentModel');
+const { NotFoundError, ValidationError } = require('../utils/errors');
+
+// Création d'un template de workflow
+exports.createWorkflowTemplate = async (templateData, userId) => {
+  try {
+    // Vérification que les étapes sont correctement ordonnées
+    if (templateData.steps && templateData.steps.length > 0) {
+      const orders = templateData.steps.map(step => step.order);
+      const uniqueOrders = new Set(orders);
+      
+      if (orders.length !== uniqueOrders.size) {
+        throw new ValidationError('Les numéros d\'ordre des étapes doivent être uniques');
+      }
+      
+      // Vérifier que les étapes commencent à 0 et sont consécutives
+      orders.sort((a, b) => a - b);
+      if (orders[0] !== 0 || !orders.every((order, index) => order === index)) {
+        throw new ValidationError('Les étapes doivent être numérotées consécutivement à partir de 0');
+      }
+    }
+    
+    const template = new WorkflowTemplate({
+      ...templateData,
+      createdBy: userId
+    });
+    
+    await template.save();
+    return template;
+  } catch (error) {
+    throw error;
+  }
+};
+
+// Application d'un template de workflow à un dossier étudiant
+exports.applyWorkflowToStudent = async (studentId, templateId, userId) => {
+  try {
+    const student = await Student.findById(studentId);
+    if (!student) {
+      throw new NotFoundError('Dossier étudiant non trouvé');
+    }
+    
+    const template = await WorkflowTemplate.findById(templateId);
+    if (!template) {
+      throw new NotFoundError('Template de workflow non trouvé');
+    }
+    
+    // Vérifier si un workflow est déjà en cours
+    if (student.workflow && student.workflow.steps && student.workflow.steps.length > 0) {
+      const inProgressSteps = student.workflow.steps.filter(step => 
+        step.status === 'in_progress' || step.status === 'completed'
+      );
+      
+      if (inProgressSteps.length > 0) {
+        throw new ValidationError('Un workflow est déjà en cours pour cet étudiant');
+      }
+    }
+    
+    // Application du template
+    student.workflow = {
+      template: template._id,
+      currentStep: 0,
+      steps: template.steps.map((step, index) => ({
+        name: step.name,
+        description: step.description,
+        order: step.order,
+        status: index === 0 ? 'in_progress' : 'pending',
+        startDate: index === 0 ? new Date() : null,
+        responsibleStaff: null,
+        requiredDocuments: []
+      }))
+    };
+    
+    await student.save();
+    return student;
+  } catch (error) {
+    throw error;
+  }
+};
+
+// --------------------------------------
+// MIDDLEWARES (middleware/)
+// --------------------------------------
+
+// fileUpload.js - Gestion des uploads de fichiers
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
+
+// Configuration du stockage des fichiers
+const createStorage = (destination) => {
+  return multer.diskStorage({
+    destination: (req, file, cb) => {
+      // Création du répertoire s'il n'existe pas
+      const dir = path.join(__dirname, '..', 'uploads', destination);
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      // Génération d'un nom de fichier unique
+      const uniqueFileName = `${uuidv4()}-${file.originalname.replace(/\s+/g, '_')}`;
+      cb(null, uniqueFileName);
+    }
+  });
+};
+
+// Configuration du filtre des fichiers (types autorisés)
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = [
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  ];
+  
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Type de fichier non autorisé'), false);
+  }
+};
+
+// Configuration des limites
+const limits = {
+  fileSize: 10 * 1024 * 1024 // 10MB max
+};
+
+// Création des uploadeurs pour différents types de documents
+exports.uploadStudentDocument = multer({
+  storage: createStorage('student-documents'),
+  fileFilter,
+  limits
+});
+
+// validators.js - Validation des données
+const { body, param, validationResult } = require('express-validator');
+
+// Règles de validation pour la création d'un étudiant
+exports.createStudentValidation = [
+  body('personalInfo.firstName').notEmpty().withMessage('Le prénom est requis'),
+  body('personalInfo.lastName').notEmpty().withMessage('Le nom est requis'),
+  body('personalInfo.email').isEmail().withMessage('Email invalide'),
+  body('personalInfo.dateOfBirth').optional().isISO8601().withMessage('Date de naissance invalide'),
+  body('academicInfo.currentProgram').optional(),
+  body('academicInfo.targetProgram').optional(),
+  body('exchangeInfo.exchangeType').optional().isIn([
+    'semester_abroad', 'double_degree', 'full_program', 'summer_school', 'internship'
+  ]).withMessage('Type d\'échange invalide'),
+  body('exchangeInfo.startDate').optional().isISO8601().withMessage('Date de début invalide'),
+  body('exchangeInfo.endDate').optional().isISO8601().withMessage('Date de fin invalide')
+];
+
+// Middleware de validation des requêtes
+exports.validateRequest = (validationType) => {
+  let validationRules;
+  
+  switch (validationType) {
+    case 'createStudent':
+      validationRules = exports.createStudentValidation;
+      break;
+    case 'updateStudent':
+      validationRules = exports.updateStudentValidation;
+      break;
+    case 'uploadDocument':
+      validationRules = exports.uploadDocumentValidation;
+      break;
+    // Autres types de validation...
+    default:
+      validationRules = [];
+  }
+  
+  return [
+    ...validationRules,
+    (req, res, next) => {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+      next();
+    }
+  ];
+};
+
+// --------------------------------------
+// CONFIGURATION PRINCIPALE (app.js)
+// --------------------------------------
+
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const { errorHandler } = require('./middleware/errorHandler');
+const logger = require('./utils/logger');
+const config = require('./config');
+
+// Routes
+const studentRoutes = require('./routes/studentRoutes');
+const workflowRoutes = require('./routes/workflowRoutes');
+const authRoutes = require('./routes/authRoutes');
+
+// Initialisation de l'application
+const app = express();
+
+// Middleware de sécurité
+app.use(helmet());
+app.use(cors({
+  origin: config.corsOrigins,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Rate limiting pour prévenir les attaques par force brute
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requêtes par fenêtre par IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Trop de requêtes, veuillez réessayer plus tard'
+  }
+});
+app.use('/api/', apiLimiter);
+
+// Parsing des requêtes
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Logging des requêtes
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.originalUrl} - ${req.ip}`);
+  next();
+});
+
+// Routes API
+app.use('/api/students', studentRoutes);
+app.use('/api/workflows', workflowRoutes);
+app.use('/api/auth', authRoutes);
+
+// Route de vérification de santé
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'API opérationnelle',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Gestion des routes non trouvées
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route non trouvée'
+  });
+});
+
+// Middleware de gestion des erreurs
+app.use(errorHandler);
+
+// Connexion à la base de données et démarrage du serveur
+mongoose.connect(config.mongoUri, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+  .then(() => {
+    logger.info('Connexion à MongoDB établie avec succès');
+    const server = app.listen(config.port, () => {
+      logger.info(`Serveur démarré sur le port ${config.port}`);
+    });
+    
+    // Gestion de l'arrêt propre
+    const shutdown = () => {
+      logger.info('Signal d\'arrêt reçu, fermeture des connexions...');
+      server.close(() => {
+        logger.info('Serveur HTTP arrêté');
+        mongoose.connection.close(false, () => {
+          logger.info('Connexion MongoDB fermée');
+          process.exit(0);
+        });
+      });
+    };
+    
+    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', shutdown);
+  })
+  .catch(err => {
+    logger.error('Erreur de connexion à MongoDB:', err);
+    process.exit(1);
+  });
+
+// --------------------------------------
+// FRONTEND - EXEMPLE DE COMPOSANT REACT POUR FORMULAIRE D'INSCRIPTION
+// --------------------------------------
+
+// StudentRegistrationForm.js
+import React, { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { yupResolver } from '@hookform/resolvers/yup';
+import * as yup from 'yup';
+import axios from 'axios';
+import { Alert, TextField, Button, Paper, Typography, Grid, MenuItem, CircularProgress } from '@mui/material';
+
+// Schéma de validation
+const schema = yup.object().shape({
+  personalInfo: yup.object().shape({
+    firstName: yup.string().required('Prénom requis'),
+    lastName: yup.string().required('Nom requis'),
+    email: yup.string().email('Email invalide').required('Email requis'),
+    phone: yup.string().nullable(),
+    dateOfBirth: yup.date().nullable().typeError('Date invalide'),
+    nationality: yup.string().nullable(),
+    address: yup.object().shape({
+      street: yup.string().nullable(),
+      city: yup.string().nullable(),
+      postalCode: yup.string().nullable(),
+      country: yup.string().nullable(),
+    }),
+  }),
+  academicInfo: yup.object().shape({
+    currentProgram: yup.string().required('Programme actuel requis'),
+    currentInstitution: yup.string().required('Institution actuelle requise'),
+    targetProgram: yup.string().required('Programme cible requis'),
+    targetInstitution: yup.string().required('Institution cible requise'),
+    academicLevel: yup.string().required('Niveau académique requis')
+      .oneOf(['bachelor', 'master', 'doctorate', 'other'], 'Niveau académique invalide'),
+    yearsOfStudy: yup.number().positive('Doit être positif').integer('Doit être un entier').nullable(),
+    gpa: yup.number().min(0, 'Doit être positif').max(4, 'Maximum 4.0').nullable(),
+  }),
+exchangeInfo: yup.object().shape({
+    exchangeType: yup.string().required('Type d\'échange requis')
+      .oneOf(['semester_abroad', 'double_degree', 'full_program', 'summer_school', 'internship'], 'Type d\'échange invalide'),
+    startDate: yup.date().required('Date de début requise').typeError('Date invalide'),
+    endDate: yup.date().required('Date de fin requise').typeError('Date invalide')
+      .min(yup.ref('startDate'), 'La date de fin doit être après la date de début'),
+    destinationCountry: yup.string().required('Pays de destination requis'),
+  }),
+});
+
+// Composant principal
+const StudentRegistrationForm = () => {
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [error, setError] = useState(null);
+  
+  const { register, handleSubmit, formState: { errors }, reset } = useForm({
+    resolver: yupResolver(schema),
+    defaultValues: {
+      personalInfo: {
+        firstName: '',
+        lastName: '',
+        email: '',
+        phone: '',
+        dateOfBirth: '',
+        nationality: '',
+        address: {
+          street: '',
+          city: '',
+          postalCode: '',
+          country: '',
+        },
+      },
+      academicInfo: {
+        currentProgram: '',
+        currentInstitution: '',
+        targetProgram: '',
+        targetInstitution: '',
+        academicLevel: '',
+        yearsOfStudy: '',
+        gpa: '',
+      },
+      exchangeInfo: {
+        exchangeType: '',
+        startDate: '',
+        endDate: '',
+        destinationCountry: '',
+      },
+    },
+  });
+  
+  const onSubmit = async (data) => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Envoi des données au backend
+      const response = await axios.post('/api/students', data, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        },
+      });
+      
+      if (response.data.success) {
+        setSuccess(true);
+        reset();
+        setTimeout(() => setSuccess(false), 5000); // Masquer le message de succès après 5 secondes
+      } else {
+        setError(response.data.message || 'Une erreur est survenue');
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Une erreur est survenue lors de l\'enregistrement');
+      console.error('Erreur:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const academicLevels = [
+    { value: 'bachelor', label: 'Licence' },
+    { value: 'master', label: 'Master' },
+    { value: 'doctorate', label: 'Doctorat' },
+    { value: 'other', label: 'Autre' },
+  ];
+  
+  const exchangeTypes = [
+    { value: 'semester_abroad', label: 'Semestre à l\'étranger' },
+    { value: 'double_degree', label: 'Double diplôme' },
+    { value: 'full_program', label: 'Programme complet' },
+    { value: 'summer_school', label: 'École d\'été' },
+    { value: 'internship', label: 'Stage' },
+  ];
+  
+  return (
+    <Paper sx={{ p: 4, maxWidth: 800, mx: 'auto', mt: 4 }}>
+      <Typography variant="h4" component="h1" gutterBottom align="center">
+        Inscription Étudiant - DEI-StudyBloom
+      </Typography>
+      
+      {success && (
+        <Alert severity="success" sx={{ mb: 3 }}>
+          Inscription réussie ! Le dossier étudiant a été créé.
+        </Alert>
+      )}
+      
+      {error && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          {error}
+        </Alert>
+      )}
+      
+      <form onSubmit={handleSubmit(onSubmit)}>
+        {/* Informations personnelles */}
+        <Typography variant="h6" gutterBottom sx={{ mt: 3 }}>
+          Informations personnelles
+        </Typography>
+        <Grid container spacing={2}>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Prénom *"
+              {...register('personalInfo.firstName')}
+              error={!!errors.personalInfo?.firstName}
+              helperText={errors.personalInfo?.firstName?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Nom *"
+              {...register('personalInfo.lastName')}
+              error={!!errors.personalInfo?.lastName}
+              helperText={errors.personalInfo?.lastName?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Email *"
+              type="email"
+              {...register('personalInfo.email')}
+              error={!!errors.personalInfo?.email}
+              helperText={errors.personalInfo?.email?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Téléphone"
+              {...register('personalInfo.phone')}
+              error={!!errors.personalInfo?.phone}
+              helperText={errors.personalInfo?.phone?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Date de naissance"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              {...register('personalInfo.dateOfBirth')}
+              error={!!errors.personalInfo?.dateOfBirth}
+              helperText={errors.personalInfo?.dateOfBirth?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Nationalité"
+              {...register('personalInfo.nationality')}
+              error={!!errors.personalInfo?.nationality}
+              helperText={errors.personalInfo?.nationality?.message}
+            />
+          </Grid>
+          
+          {/* Adresse */}
+          <Grid item xs={12}>
+            <TextField
+              fullWidth
+              label="Adresse"
+              {...register('personalInfo.address.street')}
+              error={!!errors.personalInfo?.address?.street}
+              helperText={errors.personalInfo?.address?.street?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Ville"
+              {...register('personalInfo.address.city')}
+              error={!!errors.personalInfo?.address?.city}
+              helperText={errors.personalInfo?.address?.city?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Code postal"
+              {...register('personalInfo.address.postalCode')}
+              error={!!errors.personalInfo?.address?.postalCode}
+              helperText={errors.personalInfo?.address?.postalCode?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Pays"
+              {...register('personalInfo.address.country')}
+              error={!!errors.personalInfo?.address?.country}
+              helperText={errors.personalInfo?.address?.country?.message}
+            />
+          </Grid>
+        </Grid>
+        
+        {/* Informations académiques */}
+        <Typography variant="h6" gutterBottom sx={{ mt: 3 }}>
+          Informations académiques
+        </Typography>
+        <Grid container spacing={2}>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Programme actuel *"
+              {...register('academicInfo.currentProgram')}
+              error={!!errors.academicInfo?.currentProgram}
+              helperText={errors.academicInfo?.currentProgram?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Institution actuelle *"
+              {...register('academicInfo.currentInstitution')}
+              error={!!errors.academicInfo?.currentInstitution}
+              helperText={errors.academicInfo?.currentInstitution?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              select
+              label="Niveau académique *"
+              {...register('academicInfo.academicLevel')}
+              error={!!errors.academicInfo?.academicLevel}
+              helperText={errors.academicInfo?.academicLevel?.message}
+              defaultValue=""
+            >
+              {academicLevels.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Années d'études"
+              type="number"
+              {...register('academicInfo.yearsOfStudy')}
+              error={!!errors.academicInfo?.yearsOfStudy}
+              helperText={errors.academicInfo?.yearsOfStudy?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="GPA / Moyenne"
+              type="number"
+              inputProps={{ step: "0.01" }}
+              {...register('academicInfo.gpa')}
+              error={!!errors.academicInfo?.gpa}
+              helperText={errors.academicInfo?.gpa?.message}
+            />
+          </Grid>
+        </Grid>
+        
+        {/* Informations d'échange */}
+        <Typography variant="h6" gutterBottom sx={{ mt: 3 }}>
+          Programme d'échange international
+        </Typography>
+        <Grid container spacing={2}>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Programme cible *"
+              {...register('academicInfo.targetProgram')}
+              error={!!errors.academicInfo?.targetProgram}
+              helperText={errors.academicInfo?.targetProgram?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Institution cible *"
+              {...register('academicInfo.targetInstitution')}
+              error={!!errors.academicInfo?.targetInstitution}
+              helperText={errors.academicInfo?.targetInstitution?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              select
+              label="Type d'échange *"
+              {...register('exchangeInfo.exchangeType')}
+              error={!!errors.exchangeInfo?.exchangeType}
+              helperText={errors.exchangeInfo?.exchangeType?.message}
+              defaultValue=""
+            >
+              {exchangeTypes.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Pays de destination *"
+              {...register('exchangeInfo.destinationCountry')}
+              error={!!errors.exchangeInfo?.destinationCountry}
+              helperText={errors.exchangeInfo?.destinationCountry?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Date de début *"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              {...register('exchangeInfo.startDate')}
+              error={!!errors.exchangeInfo?.startDate}
+              helperText={errors.exchangeInfo?.startDate?.message}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              label="Date de fin *"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              {...register('exchangeInfo.endDate')}
+              error={!!errors.exchangeInfo?.endDate}
+              helperText={errors.exchangeInfo?.endDate?.message}
+            />
+          </Grid>
+        </Grid>
+        
+        {/* Bouton de soumission */}
+        <Button
+          type="submit"
+          variant="contained"
+          color="primary"
+          size="large"
+          fullWidth
+          disabled={loading}
+          sx={{ mt: 4 }}
+        >
+          {loading ? <CircularProgress size={24} /> : 'Soumettre l\'inscription'}
+        </Button>
+      </form>
+    </Paper>
+  );
+};
+
+export default StudentRegistrationForm;
+
+// --------------------------------------
+// FRONTEND - VISUALISATION DU WORKFLOW
+// --------------------------------------
+
+// StudentWorkflowView.js
+import React, { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
+import axios from 'axios';
+import {
+  Stepper,
+  Step,
+  StepLabel,
+  StepContent,
+  Paper,
+  Typography,
+  Button,
+  Chip,
+  Box,
+  Card,
+  CardContent,
+  CardActions,
+  Grid,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  TextField,
+  CircularProgress,
+  Alert
+} from '@mui/material';
+
+// Composant pour l'affichage du workflow
+const StudentWorkflowView = () => {
+  const { id } = useParams();
+  const [student, setStudent] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [openDialog, setOpenDialog] = useState(false);
+  const [currentStepIndex, setCurrentStepIndex] = useState(null);
+  const [comment, setComment] = useState('');
+  const [updateLoading, setUpdateLoading] = useState(false);
+  const [updateSuccess, setUpdateSuccess] = useState(false);
+  
+  // Récupération des données de l'étudiant
+  useEffect(() => {
+    const fetchStudent = async () => {
+      try {
+        const response = await axios.get(`/api/students/${id}`, {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        });
+        
+        if (response.data.success) {
+          setStudent(response.data.data);
+        } else {
+          setError('Erreur lors de la récupération des données');
+        }
+      } catch (err) {
+        setError(err.response?.data?.message || 'Une erreur est survenue');
+        console.error('Erreur:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchStudent();
+  }, [id]);
+  
+  // Ouverture de la boîte de dialogue pour mettre à jour une étape
+  const handleOpenDialog = (stepIndex) => {
+    setCurrentStepIndex(stepIndex);
+    setOpenDialog(true);
+  };
+  
+  // Fermeture de la boîte de dialogue
+  const handleCloseDialog = () => {
+    setOpenDialog(false);
+    setComment('');
+    setUpdateSuccess(false);
+  };
+  
+  // Mise à jour du statut d'une étape
+  const handleUpdateStepStatus = async (status) => {
+    setUpdateLoading(true);
+    
+    try {
+      const stepId = student.workflow.steps[currentStepIndex]._id;
+      const response = await axios.patch(
+        `/api/students/${id}/workflow/steps/${stepId}`,
+        {
+          status,
+          comment: comment.trim() !== '' ? comment : undefined
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        }
+      );
+      
+      if (response.data.success) {
+        // Mise à jour locale des données
+        const updatedStudent = { ...student };
+        updatedStudent.workflow.steps[currentStepIndex].status = status;
+        
+        if (comment.trim() !== '') {
+          if (!updatedStudent.notes) {
+            updatedStudent.notes = [];
+          }
+          updatedStudent.notes.push({
+            text: comment,
+            date: new Date().toISOString()
+          });
+        }
+        
+        setStudent(updatedStudent);
+        setUpdateSuccess(true);
+        
+        // Si l'étape est marquée comme terminée et c'est l'étape actuelle,
+        // on peut avancer automatiquement dans le workflow
+        if (status === 'completed' && currentStepIndex === student.workflow.currentStep) {
+          await advanceWorkflow();
+        }
+      } else {
+        setError(response.data.message || 'Erreur lors de la mise à jour');
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Une erreur est survenue');
+      console.error('Erreur:', err);
+    } finally {
+      setUpdateLoading(false);
+    }
+  };
+  
+  // Avancement dans le workflow
+  const advanceWorkflow = async () => {
+    try {
+      const response = await axios.post(
+        `/api/students/${id}/workflow/advance`,
+        {},
+        {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          }
+        }
+      );
+      
+      if (response.data.success) {
+        // Mise à jour locale des données
+        const updatedStudent = { ...student };
+        updatedStudent.workflow = response.data.data;
+        setStudent(updatedStudent);
+      }
+    } catch (err) {
+      console.error('Erreur lors de l\'avancement dans le workflow:', err);
+      // On ne bloque pas l'interface pour cette erreur
+    }
+  };
+  
+  // Rendu du statut sous forme de chip
+  const renderStatusChip = (status) => {
+    let color;
+    let label;
+    
+    switch (status) {
+      case 'pending':
+        color = 'default';
+        label = 'En attente';
+        break;
+      case 'in_progress':
+        color = 'primary';
+        label = 'En cours';
+        break;
+      case 'completed':
+        color = 'success';
+        label = 'Terminé';
+        break;
+      case 'blocked':
+        color = 'error';
+        label = 'Bloqué';
+        break;
+      default:
+        color = 'default';
+        label = status;
+    }
+    
+    return <Chip color={color} label={label} size="small" />;
+  };
+  
+  if (loading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+  
+  if (error) {
+    return (
+      <Alert severity="error" sx={{ mt: 4 }}>
+        {error}
+      </Alert>
+    );
+  }
+  
+  if (!student || !student.workflow || !student.workflow.steps) {
+    return (
+      <Alert severity="info" sx={{ mt: 4 }}>
+        Aucun workflow n'est associé à cet étudiant.
+      </Alert>
+    );
+  }
+  
+  return (
+    <Paper sx={{ p: 4, maxWidth: 1000, mx: 'auto', mt: 4 }}>
+      <Typography variant="h4" gutterBottom>
+        Suivi du dossier étudiant
+      </Typography>
+      
+      <Box sx={{ mb: 4 }}>
+        <Typography variant="h6" gutterBottom>
+          {student.personalInfo.firstName} {student.personalInfo.lastName}
+        </Typography>
+        <Typography variant="body1" color="text.secondary">
+          Numéro étudiant: {student.studentNumber}
+        </Typography>
+        <Typography variant="body1" color="text.secondary">
+          Programme: {student.academicInfo.currentProgram} → {student.academicInfo.targetProgram}
+        </Typography>
+        <Typography variant="body1" color="text.secondary">
+          Statut: {renderStatusChip(student.exchangeInfo.status)}
+        </Typography>
+      </Box>
+      
+      <Typography variant="h5" gutterBottom>
+        Progression du dossier
+      </Typography>
+      
+      <Stepper 
+        activeStep={student.workflow.currentStep} 
+        orientation="vertical"
+        sx={{ mt: 3 }}
+      >
+        {student.workflow.steps.map((step, index) => (
+          <Step key={step._id || index} completed={step.status === 'completed'}>
+            <StepLabel>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                <Typography variant="subtitle1">{step.name}</Typography>
+                {step.status && renderStatusChip(step.status)}
+              </Box>
+            </StepLabel>
+            <StepContent>
+              <Typography>{step.description}</Typography>
+              
+              {step.startDate && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  Démarré le: {new Date(step.startDate).toLocaleDateString()}
+                </Typography>
+              )}
+              
+              {step.completionDate && (
+                <Typography variant="body2" color="text.secondary">
+                  Terminé le: {new Date(step.completionDate).toLocaleDateString()}
+                </Typography>
+              )}
+              
+              {step.responsibleStaff && (
+                <Typography variant="body2" color="text.secondary">
+                  Responsable: {step.responsibleStaff.firstName} {step.responsibleStaff.lastName}
+                </Typography>
+              )}
+              
+              <Box sx={{ mt: 2 }}>
+                {/* Actions disponibles selon le statut de l'étape */}
+                {step.status !== 'completed' && (
+                  <Button 
+                    variant="contained" 
+                    color="primary" 
+                    size="small"
+                    onClick={() => handleOpenDialog(index)}
+                    sx={{ mr: 1 }}
+                  >
+                    Mettre à jour le statut
+                  </Button>
+                )}
+              </Box>
+            </StepContent>
+          </Step>
+        ))}
+      </Stepper>
+      
+      {/* Documents requis pour l'étape actuelle */}
+      {student.workflow.currentStep < student.workflow.steps.length && (
+        <Box sx={{ mt: 4 }}>
+          <Typography variant="h6" gutterBottom>
+            Documents requis pour cette étape
+          </Typography>
+          
+          <Grid container spacing={2}>
+            {student.documents
+              .filter(doc => student.workflow.steps[student.workflow.currentStep].requiredDocuments.includes(doc._id))
+              .map((document) => (
+                <Grid item xs={12} sm={6} md={4} key={document._id}>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="h6">{document.name}</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Type: {document.type}
+                      </Typography>
+                      <Box sx={{ mt: 1 }}>
+                        {renderStatusChip(document.status)}
+                      </Box>
+                    </CardContent>
+                    <CardActions>
+                      {document.fileUrl && (
+                        <Button size="small" href={document.fileUrl} target="_blank">
+                          Voir le document
+                        </Button>
+                      )}
+                    </CardActions>
+                  </Card>
+                </Grid>
+              ))}
+            
+            {student.workflow.steps[student.workflow.currentStep].requiredDocuments.length === 0 && (
+              <Grid item xs={12}>
+                <Alert severity="info">
+                  Aucun document requis pour cette étape.
+                </Alert>
+              </Grid>
+            )}
+          </Grid>
+        </Box>
+      )}
+      
+      {/* Boîte de dialogue pour la mise à jour du statut */}
+      <Dialog open={openDialog} onClose={handleCloseDialog}>
+        <DialogTitle>
+          Mettre à jour le statut de l'étape
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            {currentStepIndex !== null && student?.workflow?.steps[currentStepIndex]?.name}
+          </DialogContentText>
+          
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Commentaire"
+            fullWidth
+            multiline
+            rows={4}
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            variant="outlined"
+            sx={{ mt: 2 }}
+          />
+          
+          {updateSuccess && (
+            <Alert severity="success" sx={{ mt: 2 }}>
+              Statut mis à jour avec succès !
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseDialog} color="inherit">
+            Annuler
+          </Button>
+          <Button 
+            onClick={() => handleUpdateStepStatus('in_progress')} 
+            color="primary"
+            disabled={updateLoading}
+          >
+            En cours
+          </Button>
+          <Button 
+            onClick={() => handleUpdateStepStatus('completed')} 
+            color="success"
+            disabled={updateLoading}
+          >
+            Terminé
+          </Button>
+          <Button 
+            onClick={() => handleUpdateStepStatus('blocked')} 
+            color="error"
+            disabled={updateLoading}
+          >
+            Bloqué
+          </Button>
+          
+          {updateLoading && <CircularProgress size={24} sx={{ ml: 2 }} />}
+        </DialogActions>
+      </Dialog>
+    </Paper>
+  );
+};
+
+export default StudentWorkflowView;
+
+// --------------------------------------
+// CONFIGURATION DE SÉCURITÉ
+// --------------------------------------
+
+// security.js - Implémentation des mesures de sécurité
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
+const config = require('../config');
+
+// Génération d'un sel cryptographique sécurisé
+exports.generateSalt = (length = 16) => {
+  return crypto.randomBytes(length).toString('hex');
+};
+
+// Hachage sécurisé d'un mot de passe avec sel
+exports.hashPassword = (password, salt) => {
+  return new Promise((resolve, reject) => {
+    crypto.pbkdf2(password, salt, 10000, 64, 'sha512', (err, derivedKey) => {
+      if (err) return reject(err);
+      resolve(derivedKey.toString('hex'));
+    });
+  });
+};
+
+// Vérification d'un mot de passe
+exports.verifyPassword = async (password, hash, salt) => {
+  const hashedPassword = await exports.hashPassword(password, salt);
+  return hashedPassword === hash;
+};
+
+// Génération de token JWT
+exports.generateToken = (userId, role, expiresIn = '24h') => {
+  return jwt.sign(
+    { id: userId, role },
+    config.jwtSecret,
+    { expiresIn }
+  );
+};
+
+// Validation de token JWT
+exports.validateToken = (token) => {
+  try {
+    return jwt.verify(token, config.jwtSecret);
+  } catch (error) {
+    return null;
+  }
+};
+
+// Middleware d'authentification
+exports.authenticateUser = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      success: false,
+      message: 'Accès non autorisé: token manquant'
+    });
+  }
+  
+  const token = authHeader.split(' ')[1];
+  const decoded = exports.validateToken(token);
+  
+  if (!decoded) {
+    return res.status(401).json({
+      success: false,
+      message: 'Accès non autorisé: token invalide'
+    });
+  }
+  
+  req.user = {
+    _id: decoded.id,
+    role: decoded.role
+  };
+  
+  next();
+};
+
+// Middleware d'autorisation basée sur les rôles
+exports.authorizeRole = (roles) => {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Accès interdit: droits insuffisants'
+      });
+    }
+    next();
+  };
+};
+
+// --------------------------------------
+// SERVICE DE JOURNALISATION ET D'AUDIT
+// --------------------------------------
+
+// auditLogger.js - Service de journalisation des activités
+const mongoose = require('mongoose');
+const Schema = mongoose.Schema;
+
+// Schéma pour les logs d'audit
+const AuditLogSchema = new Schema({
+  action: {
+    type: String,
+    required: true,
+    index: true
+  },
+  performedBy: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true
+  },
+  targetResource: {
+    type: Schema.Types.ObjectId,
+    index: true
+  },
+  resourceType: {
+    type: String,
+    index: true
+  },
+  details: Schema.Types.Mixed,
+  ipAddress: String,
+  userAgent: String,
+  timestamp: {
+    type: Date,
+    default: Date.now,
+    index: true
+  }
+});
+
+const AuditLog = mongoose.model('AuditLog', AuditLogSchema);
+
+// Fonction pour créer un log d'audit
+exports.createAuditLog = async (logData, req = null) => {
+  try {
+    const log = new AuditLog({
+      ...logData,
+      ipAddress: req?.ip,
+      userAgent: req?.headers?.['user-agent']
+    });
+    
+    await log.save();
+    return log;
+  } catch (error) {
+    console.error('Erreur lors de la création du log d\'audit:', error);
+    // Ne pas bloquer le flux principal en cas d'erreur
+    return null;
+  }
+};
+
+// Fonction pour rechercher des logs d'audit
+exports.findAuditLogs = async (criteria, options = {}) => {
+  try {
+    const { limit = 50, skip = 0, sort = { timestamp: -1 } } = options;
+    
+    const query = AuditLog.find(criteria)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+      
+    if (options.populate) {
+      query.populate(options.populate);
+    }
+    
+    return await query.exec();
+  } catch (error) {
+    console.error('Erreur lors de la recherche des logs d\'audit:', error);
+    throw error;
+  }
+};
