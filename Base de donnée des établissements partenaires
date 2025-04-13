@@ -1,0 +1,759 @@
+/**
+ * DEI-StudyBloom - Module Base de données des établissements partenaires
+ * 
+ * Ce script propose une implémentation optimisée pour:
+ * - Répertoire et fiches détaillées des établissements
+ * - Moteur de recherche multicritères performant
+ * - Suivi des accords et conventions
+ * 
+ * Technologies: Node.js, Express, MongoDB, ElasticSearch
+ */
+
+// Importation des dépendances
+const express = require('express');
+const router = express.Router();
+const mongoose = require('mongoose');
+const { Client } = require('@elastic/elasticsearch');
+const { body, validationResult } = require('express-validator');
+const cacheManager = require('cache-manager');
+const redisStore = require('cache-manager-redis-store');
+
+// Configuration du cache Redis pour optimiser les performances
+const memoryCache = cacheManager.caching({
+  store: redisStore,
+  host: process.env.REDIS_HOST || 'localhost',
+  port: process.env.REDIS_PORT || 6379,
+  ttl: 3600 // Durée de vie du cache: 1 heure
+});
+
+// Configuration d'ElasticSearch pour le moteur de recherche performant
+const esClient = new Client({
+  node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200'
+});
+
+/**
+ * MODÈLES DE DONNÉES
+ */
+
+// Schéma d'établissement partenaire
+const PartnerInstitutionSchema = new mongoose.Schema({
+  name: { type: String, required: true, index: true },
+  shortName: { type: String, index: true },
+  country: { type: String, required: true, index: true },
+  city: { type: String, required: true, index: true },
+  address: String,
+  website: String,
+  logo: String,
+  description: String,
+  contactInfo: [{
+    name: String,
+    role: String,
+    email: String,
+    phone: String
+  }],
+  programTypes: [{ 
+    type: String, 
+    enum: ['exchange', 'double-degree', 'summer', 'research', 'internship', 'other'], 
+    index: true 
+  }],
+  ranking: {
+    global: Number,
+    national: Number,
+    rankingSystem: String
+  },
+  academicFields: [{ type: String, index: true }],
+  languages: [{ type: String, index: true }],
+  facilities: [{
+    type: String,
+    enum: ['housing', 'sports', 'library', 'health', 'dining', 'culture']
+  }],
+  costOfLiving: {
+    currency: String,
+    averageMonthly: Number,
+    housingMonthly: Number
+  },
+  studentReviews: [{
+    studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student' },
+    rating: { type: Number, min: 1, max: 5 },
+    comment: String,
+    date: { type: Date, default: Date.now }
+  }],
+  active: { type: Boolean, default: true, index: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, { 
+  timestamps: true,
+  toJSON: { virtuals: true }
+});
+
+// Index composites pour améliorer les performances des recherches fréquentes
+PartnerInstitutionSchema.index({ country: 1, city: 1 });
+PartnerInstitutionSchema.index({ programTypes: 1, academicFields: 1 });
+PartnerInstitutionSchema.index({ 'ranking.global': 1 });
+
+// Schéma pour les accords et conventions
+const AgreementSchema = new mongoose.Schema({
+  institutionId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'PartnerInstitution', 
+    required: true,
+    index: true
+  },
+  type: { 
+    type: String, 
+    enum: ['exchange', 'double-degree', 'research', 'framework', 'other'],
+    required: true,
+    index: true
+  },
+  title: { type: String, required: true },
+  startDate: { type: Date, required: true, index: true },
+  endDate: { type: Date, required: true, index: true },
+  renewalDate: { type: Date, index: true },
+  status: { 
+    type: String, 
+    enum: ['draft', 'pending', 'active', 'expired', 'terminated'],
+    default: 'draft',
+    index: true
+  },
+  studentQuota: {
+    outgoing: Number,
+    incoming: Number
+  },
+  academicFields: [String],
+  conditions: String,
+  documents: [{
+    title: String,
+    fileUrl: String,
+    uploadDate: { type: Date, default: Date.now }
+  }],
+  contacts: [{
+    name: String,
+    role: String,
+    email: String,
+    phone: String
+  }],
+  notes: String,
+  reminderEnabled: { type: Boolean, default: true },
+  autoRenewal: { type: Boolean, default: false },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, { 
+  timestamps: true,
+  toJSON: { virtuals: true }
+});
+
+// Index pour optimiser les recherches d'accords
+AgreementSchema.index({ status: 1, endDate: 1 });
+AgreementSchema.index({ institutionId: 1, status: 1 });
+
+// Création des modèles
+const PartnerInstitution = mongoose.model('PartnerInstitution', PartnerInstitutionSchema);
+const Agreement = mongoose.model('Agreement', AgreementSchema);
+
+/**
+ * INDEXATION ELASTICSEARCH POUR RECHERCHE AVANCÉE
+ */
+
+// Fonction pour synchroniser MongoDB avec ElasticSearch
+async function syncPartnerInstitutionsToElasticsearch() {
+  try {
+    // Vérifier si l'index existe, sinon le créer avec les bons mappings
+    const indexExists = await esClient.indices.exists({ index: 'partner-institutions' });
+    
+    if (!indexExists.body) {
+      await esClient.indices.create({
+        index: 'partner-institutions',
+        body: {
+          mappings: {
+            properties: {
+              name: { type: 'text', analyzer: 'standard', fields: { keyword: { type: 'keyword' } } },
+              shortName: { type: 'text', fields: { keyword: { type: 'keyword' } } },
+              country: { type: 'keyword' },
+              city: { type: 'text', fields: { keyword: { type: 'keyword' } } },
+              description: { type: 'text', analyzer: 'standard' },
+              programTypes: { type: 'keyword' },
+              academicFields: { type: 'keyword' },
+              languages: { type: 'keyword' },
+              'ranking.global': { type: 'integer' },
+              'ranking.national': { type: 'integer' },
+              active: { type: 'boolean' },
+              location: { type: 'geo_point' }
+            }
+          }
+        }
+      });
+    }
+
+    // Récupérer tous les établissements et les indexer dans ElasticSearch
+    const institutions = await PartnerInstitution.find({});
+    
+    // Traitement par lots pour améliorer les performances
+    const batchSize = 100;
+    let batch = [];
+    
+    for (const institution of institutions) {
+      batch.push({
+        index: { _index: 'partner-institutions', _id: institution._id.toString() }
+      });
+      
+      batch.push({
+        id: institution._id.toString(),
+        name: institution.name,
+        shortName: institution.shortName,
+        country: institution.country,
+        city: institution.city,
+        description: institution.description,
+        programTypes: institution.programTypes,
+        academicFields: institution.academicFields,
+        languages: institution.languages,
+        ranking: institution.ranking,
+        active: institution.active
+      });
+      
+      if (batch.length >= batchSize * 2) {
+        await esClient.bulk({ body: batch });
+        batch = [];
+      }
+    }
+    
+    // Indexer le reste
+    if (batch.length > 0) {
+      await esClient.bulk({ body: batch });
+    }
+    
+    console.log('Synchronisation ElasticSearch complétée');
+  } catch (error) {
+    console.error('Erreur lors de la synchronisation avec ElasticSearch:', error);
+    throw error;
+  }
+}
+
+// Fonction pour mettre à jour ElasticSearch quand un établissement est modifié
+async function updateInstitutionInElasticsearch(institution) {
+  try {
+    await esClient.index({
+      index: 'partner-institutions',
+      id: institution._id.toString(),
+      body: {
+        id: institution._id.toString(),
+        name: institution.name,
+        shortName: institution.shortName,
+        country: institution.country,
+        city: institution.city,
+        description: institution.description,
+        programTypes: institution.programTypes,
+        academicFields: institution.academicFields,
+        languages: institution.languages,
+        ranking: institution.ranking,
+        active: institution.active
+      }
+    });
+  } catch (error) {
+    console.error('Erreur lors de la mise à jour de l\'index ElasticSearch:', error);
+  }
+}
+
+/**
+ * ROUTES API - ÉTABLISSEMENTS PARTENAIRES
+ */
+
+// Liste des établissements (avec pagination et filtres de base)
+router.get('/institutions', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+    
+    // Paramètres de filtrage
+    const filter = { active: true };
+    if (req.query.country) filter.country = req.query.country;
+    if (req.query.programType) filter.programTypes = req.query.programType;
+    
+    // Clé de cache basée sur les paramètres de requête
+    const cacheKey = `institutions:${JSON.stringify(req.query)}`;
+    
+    // Vérifier si les résultats sont dans le cache
+    const cachedResult = await memoryCache.get(cacheKey);
+    if (cachedResult) {
+      return res.json(cachedResult);
+    }
+    
+    // Exécuter la requête si non mise en cache
+    const institutions = await PartnerInstitution.find(filter)
+      .select('name shortName country city logo programTypes academicFields ranking')
+      .sort({ name: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+    
+    const total = await PartnerInstitution.countDocuments(filter);
+    
+    const result = {
+      data: institutions,
+      pagination: {
+        total,
+        page,
+        pages: Math.ceil(total / limit)
+      }
+    };
+    
+    // Mettre en cache les résultats
+    await memoryCache.set(cacheKey, result);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des établissements:', error);
+    res.status(500).json({ error: 'Erreur serveur lors de la récupération des établissements' });
+  }
+});
+
+// Détails d'un établissement spécifique
+router.get('/institutions/:id', async (req, res) => {
+  try {
+    const cacheKey = `institution:${req.params.id}`;
+    
+    // Vérifier le cache
+    const cachedInstitution = await memoryCache.get(cacheKey);
+    if (cachedInstitution) {
+      return res.json(cachedInstitution);
+    }
+    
+    // Obtenir l'établissement avec ses accords actifs
+    const institution = await PartnerInstitution.findById(req.params.id).lean();
+    
+    if (!institution) {
+      return res.status(404).json({ error: 'Établissement non trouvé' });
+    }
+    
+    // Récupérer les accords associés à cet établissement
+    const agreements = await Agreement.find({ 
+      institutionId: req.params.id,
+      status: 'active'
+    }).lean();
+    
+    // Combiner les données
+    const result = {
+      ...institution,
+      agreements
+    };
+    
+    // Mettre en cache
+    await memoryCache.set(cacheKey, result);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des détails de l\'établissement:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Recherche avancée avec ElasticSearch
+router.get('/institutions/search', async (req, res) => {
+  try {
+    const {
+      query,          // Recherche textuelle (nom, description)
+      countries,      // Array de pays
+      programTypes,   // Array de types de programmes
+      academicFields, // Array de domaines académiques
+      languages,      // Array de langues d'enseignement
+      minRanking,     // Classement minimum
+      maxRanking,     // Classement maximum
+      page = 1,
+      limit = 20
+    } = req.query;
+    
+    const from = (page - 1) * limit;
+    
+    // Construction de la requête ElasticSearch
+    const esQuery = {
+      bool: {
+        must: [],
+        filter: [{ term: { active: true } }]
+      }
+    };
+    
+    // Recherche textuelle
+    if (query) {
+      esQuery.bool.must.push({
+        multi_match: {
+          query,
+          fields: ['name^3', 'shortName^2', 'description', 'city'],
+          fuzziness: 'AUTO'
+        }
+      });
+    }
+    
+    // Filtres
+    if (countries && countries.length) {
+      esQuery.bool.filter.push({
+        terms: { country: Array.isArray(countries) ? countries : [countries] }
+      });
+    }
+    
+    if (programTypes && programTypes.length) {
+      esQuery.bool.filter.push({
+        terms: { programTypes: Array.isArray(programTypes) ? programTypes : [programTypes] }
+      });
+    }
+    
+    if (academicFields && academicFields.length) {
+      esQuery.bool.filter.push({
+        terms: { academicFields: Array.isArray(academicFields) ? academicFields : [academicFields] }
+      });
+    }
+    
+    if (languages && languages.length) {
+      esQuery.bool.filter.push({
+        terms: { languages: Array.isArray(languages) ? languages : [languages] }
+      });
+    }
+    
+    // Filtrage par classement
+    if (minRanking || maxRanking) {
+      const rankingRange = {};
+      if (minRanking) rankingRange.gte = parseInt(minRanking);
+      if (maxRanking) rankingRange.lte = parseInt(maxRanking);
+      
+      esQuery.bool.filter.push({
+        range: { 'ranking.global': rankingRange }
+      });
+    }
+    
+    // Exécution de la recherche
+    const esResult = await esClient.search({
+      index: 'partner-institutions',
+      body: {
+        from,
+        size: limit,
+        query: esQuery,
+        sort: [
+          { '_score': { order: 'desc' } },
+          { 'ranking.global': { order: 'asc' } },
+          { 'name.keyword': { order: 'asc' } }
+        ]
+      }
+    });
+    
+    // Formatting results
+    const institutions = esResult.body.hits.hits.map(hit => ({
+      id: hit._source.id,
+      name: hit._source.name,
+      shortName: hit._source.shortName,
+      country: hit._source.country,
+      city: hit._source.city,
+      programTypes: hit._source.programTypes,
+      academicFields: hit._source.academicFields,
+      ranking: hit._source.ranking,
+      score: hit._score
+    }));
+    
+    res.json({
+      data: institutions,
+      pagination: {
+        total: esResult.body.hits.total.value,
+        page: parseInt(page),
+        pages: Math.ceil(esResult.body.hits.total.value / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Erreur lors de la recherche avancée:', error);
+    res.status(500).json({ error: 'Erreur lors de la recherche' });
+  }
+});
+
+// Création d'un nouvel établissement partenaire
+router.post('/institutions', [
+  // Validation
+  body('name').notEmpty().withMessage('Le nom est requis'),
+  body('country').notEmpty().withMessage('Le pays est requis'),
+  body('city').notEmpty().withMessage('La ville est requise'),
+  body('programTypes').isArray().withMessage('Les types de programmes doivent être un tableau'),
+], async (req, res) => {
+  // Vérifier les erreurs de validation
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+  
+  try {
+    const newInstitution = new PartnerInstitution(req.body);
+    await newInstitution.save();
+    
+    // Indexer dans ElasticSearch
+    await updateInstitutionInElasticsearch(newInstitution);
+    
+    // Invalider le cache qui liste les établissements
+    await memoryCache.del('institutions:*');
+    
+    res.status(201).json(newInstitution);
+  } catch (error) {
+    console.error('Erreur lors de la création de l\'établissement:', error);
+    res.status(500).json({ error: 'Erreur lors de la création de l\'établissement' });
+  }
+});
+
+// Mise à jour d'un établissement
+router.put('/institutions/:id', async (req, res) => {
+  try {
+    const updatedInstitution = await PartnerInstitution.findByIdAndUpdate(
+      req.params.id,
+      { $set: req.body },
+      { new: true, runValidators: true }
+    );
+    
+    if (!updatedInstitution) {
+      return res.status(404).json({ error: 'Établissement non trouvé' });
+    }
+    
+    // Mettre à jour ElasticSearch
+    await updateInstitutionInElasticsearch(updatedInstitution);
+    
+    // Invalider les caches
+    await memoryCache.del(`institution:${req.params.id}`);
+    await memoryCache.del('institutions:*');
+    
+    res.json(updatedInstitution);
+  } catch (error) {
+    console.error('Erreur lors de la mise à jour de l\'établissement:', error);
+    res.status(500).json({ error: 'Erreur lors de la mise à jour' });
+  }
+});
+
+/**
+ * ROUTES API - ACCORDS ET CONVENTIONS
+ */
+
+// Liste des accords (avec pagination et filtres)
+router.get('/agreements', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+    
+    // Paramètres de filtrage
+    const filter = {};
+    if (req.query.institutionId) filter.institutionId = req.query.institutionId;
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.type) filter.type = req.query.type;
+    
+    // Gestion des filtres de date
+    if (req.query.expiringBefore) {
+      filter.endDate = { $lte: new Date(req.query.expiringBefore) };
+    }
+    
+    // Clé de cache
+    const cacheKey = `agreements:${JSON.stringify(req.query)}`;
+    
+    // Vérifier le cache
+    const cachedResult = await memoryCache.get(cacheKey);
+    if (cachedResult) {
+      return res.json(cachedResult);
+    }
+    
+    // Exécuter la requête avec population de l'établissement associé
+    const agreements = await Agreement.find(filter)
+      .populate('institutionId', 'name country city')
+      .sort({ endDate: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+    
+    const total = await Agreement.countDocuments(filter);
+    
+    const result = {
+      data: agreements,
+      pagination: {
+        total,
+        page,
+        pages: Math.ceil(total / limit)
+      }
+    };
+    
+    // Mettre en cache
+    await memoryCache.set(cacheKey, result);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des accords:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Détails d'un accord spécifique
+router.get('/agreements/:id', async (req, res) => {
+  try {
+    const cacheKey = `agreement:${req.params.id}`;
+    
+    // Vérifier le cache
+    const cachedAgreement = await memoryCache.get(cacheKey);
+    if (cachedAgreement) {
+      return res.json(cachedAgreement);
+    }
+    
+    const agreement = await Agreement.findById(req.params.id)
+      .populate('institutionId', 'name country city')
+      .lean();
+    
+    if (!agreement) {
+      return res.status(404).json({ error: 'Accord non trouvé' });
+    }
+    
+    // Mettre en cache
+    await memoryCache.set(cacheKey, agreement);
+    
+    res.json(agreement);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des détails de l\'accord:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Création d'un nouvel accord
+router.post('/agreements', [
+  // Validation
+  body('institutionId').notEmpty().withMessage('L\'ID de l\'établissement est requis'),
+  body('type').notEmpty().withMessage('Le type d\'accord est requis'),
+  body('title').notEmpty().withMessage('Le titre est requis'),
+  body('startDate').isISO8601().withMessage('La date de début doit être valide'),
+  body('endDate').isISO8601().withMessage('La date de fin doit être valide')
+], async (req, res) => {
+  // Vérifier les erreurs de validation
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+  
+  try {
+    // Vérifier si l'établissement existe
+    const institutionExists = await PartnerInstitution.exists({ _id: req.body.institutionId });
+    if (!institutionExists) {
+      return res.status(400).json({ error: 'Établissement partenaire non trouvé' });
+    }
+    
+    // Créer l'accord
+    const newAgreement = new Agreement({
+      ...req.body,
+      createdBy: req.user ? req.user._id : null
+    });
+    
+    await newAgreement.save();
+    
+    // Invalider les caches
+    await memoryCache.del('agreements:*');
+    await memoryCache.del(`institution:${req.body.institutionId}`);
+    
+    res.status(201).json(newAgreement);
+  } catch (error) {
+    console.error('Erreur lors de la création de l\'accord:', error);
+    res.status(500).json({ error: 'Erreur lors de la création de l\'accord' });
+  }
+});
+
+// Mise à jour d'un accord
+router.put('/agreements/:id', async (req, res) => {
+  try {
+    const updatedAgreement = await Agreement.findByIdAndUpdate(
+      req.params.id,
+      { $set: req.body },
+      { new: true, runValidators: true }
+    );
+    
+    if (!updatedAgreement) {
+      return res.status(404).json({ error: 'Accord non trouvé' });
+    }
+    
+    // Invalider les caches
+    await memoryCache.del(`agreement:${req.params.id}`);
+    await memoryCache.del('agreements:*');
+    await memoryCache.del(`institution:${updatedAgreement.institutionId}`);
+    
+    res.json(updatedAgreement);
+  } catch (error) {
+    console.error('Erreur lors de la mise à jour de l\'accord:', error);
+    res.status(500).json({ error: 'Erreur lors de la mise à jour' });
+  }
+});
+
+/**
+ * FONCTIONS UTILITAIRES
+ */
+
+// Système d'alerte pour accords expirant bientôt
+async function checkExpiringAgreements() {
+  try {
+    // Trouver tous les accords qui expirent dans les 90 jours
+    const threeMonthsFromNow = new Date();
+    threeMonthsFromNow.setDate(threeMonthsFromNow.getDate() + 90);
+    
+    const expiringAgreements = await Agreement.find({
+      status: 'active',
+      endDate: {
+        $gte: new Date(),
+        $lte: threeMonthsFromNow
+      },
+      reminderEnabled: true
+    }).populate('institutionId', 'name');
+    
+    // Ici, vous pouvez implémenter la logique d'envoi de notifications
+    // par e-mail, dashboard, etc.
+    
+    console.log(`${expiringAgreements.length} accords expireront dans les 90 prochains jours`);
+    
+    return expiringAgreements;
+  } catch (error) {
+    console.error('Erreur lors de la vérification des accords expirants:', error);
+    throw error;
+  }
+}
+
+// Fonction pour générer un rapport statistique des établissements partenaires
+async function generatePartnershipStatistics() {
+  try {
+    const stats = await Promise.all([
+      // Nombre total d'établissements actifs
+      PartnerInstitution.countDocuments({ active: true }),
+      
+      // Répartition par pays
+      PartnerInstitution.aggregate([
+        { $match: { active: true } },
+        { $group: { _id: '$country', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]),
+      
+      // Répartition par type de programme
+      PartnerInstitution.aggregate([
+        { $match: { active: true } },
+        { $unwind: '$programTypes' },
+        { $group: { _id: '$programTypes', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ]),
+      
+      // Nombre d'accords par statut
+      Agreement.aggregate([
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+        { $sort: { count: -1 } }
+      ])
+    ]);
+    
+    return {
+      totalActiveInstitutions: stats[0],
+      countryDistribution: stats[1],
+      programTypeDistribution: stats[2],
+      agreementStatusDistribution: stats[3]
+    };
+  } catch (error) {
+    console.error('Erreur lors de la génération des statistiques:', error);
+    throw error;
+  }
+}
+
+// Export des routes et fonctions
+module.exports = {
+  router,
+  PartnerInstitution,
+  Agreement,
+  syncPartnerInstitutionsToElasticsearch,
+  checkExpiringAgreements,
+  generatePartnershipStatistics
+};
