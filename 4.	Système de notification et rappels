@@ -1,0 +1,1360 @@
+// -----------------------------------------------------
+// SYSTÈME DE NOTIFICATION POUR DEI-STUDYBLOOM
+// -----------------------------------------------------
+
+// Structure du projet:
+// /src
+//   /notifications
+//     index.js               - Point d'entrée du module de notification
+//     notificationService.js - Service principal de notification
+//     providers/             - Fournisseurs de notifications par canal
+//       emailProvider.js
+//       smsProvider.js
+//       pushProvider.js
+//     templates/             - Templates des notifications
+//     scheduler.js           - Planificateur de notifications
+//     validator.js           - Validation des données
+//     security.js            - Sécurité et rate limiting
+
+// -----------------------------------------------------
+// notificationService.js - Service principal
+// -----------------------------------------------------
+
+const { EmailProvider } = require('./providers/emailProvider');
+const { SMSProvider } = require('./providers/smsProvider');
+const { PushProvider } = require('./providers/pushProvider');
+const { validateNotification } = require('./validator');
+const { enforceRateLimits, sanitizeContent } = require('./security');
+const NotificationScheduler = require('./scheduler');
+const logger = require('../utils/logger');
+
+class NotificationService {
+  constructor() {
+    this.emailProvider = new EmailProvider();
+    this.smsProvider = new SMSProvider();
+    this.pushProvider = new PushProvider();
+    this.scheduler = new NotificationScheduler();
+    
+    // Cache pour optimiser l'envoi des notifications
+    this.templateCache = new Map();
+    
+    // File d'attente des notifications pour une meilleure performance
+    this.notificationQueue = [];
+    
+    // Préférences des utilisateurs (à charger depuis la base de données)
+    this.userPreferences = new Map();
+  }
+
+  async initialize() {
+    try {
+      // Charger les préférences des utilisateurs depuis la base de données
+      await this.loadUserPreferences();
+      
+      // Initialiser les fournisseurs de notification
+      await Promise.all([
+        this.emailProvider.initialize(),
+        this.smsProvider.initialize(),
+        this.pushProvider.initialize()
+      ]);
+      
+      // Démarrer le traitement de la file d'attente
+      this.startQueueProcessing();
+      
+      // Initialiser le planificateur
+      await this.scheduler.initialize(this);
+      
+      logger.info('Système de notification initialisé avec succès');
+      return true;
+    } catch (error) {
+      logger.error('Erreur lors de l\'initialisation du système de notification:', error);
+      throw error;
+    }
+  }
+
+  async loadUserPreferences() {
+    try {
+      // Simuler le chargement des préférences depuis la base de données
+      // En production, remplacer par un appel réel à la base de données
+      const userRepository = require('../repositories/userRepository');
+      const users = await userRepository.getAllUsersWithNotificationPreferences();
+      
+      users.forEach(user => {
+        this.userPreferences.set(user.id, {
+          channels: user.notificationPreferences.channels || ['email'],
+          frequency: user.notificationPreferences.frequency || 'immediate',
+          doNotDisturb: user.notificationPreferences.doNotDisturb || false,
+          doNotDisturbStart: user.notificationPreferences.doNotDisturbStart,
+          doNotDisturbEnd: user.notificationPreferences.doNotDisturbEnd,
+          language: user.language || 'fr',
+        });
+      });
+      
+      logger.info(`Préférences de notification chargées pour ${users.length} utilisateurs`);
+    } catch (error) {
+      logger.error('Erreur lors du chargement des préférences de notification:', error);
+      throw error;
+    }
+  }
+
+  startQueueProcessing() {
+    // Traiter la file d'attente toutes les 30 secondes
+    setInterval(() => this.processQueue(), 30000);
+    logger.info('Traitement de la file d\'attente des notifications démarré');
+  }
+
+  async processQueue() {
+    if (this.notificationQueue.length === 0) return;
+    
+    const batchSize = 50; // Traiter 50 notifications à la fois
+    const batch = this.notificationQueue.splice(0, batchSize);
+    
+    const results = await Promise.allSettled(
+      batch.map(item => this.processNotification(item))
+    );
+    
+    // Analyser les résultats
+    const failed = results.filter(r => r.status === 'rejected');
+    if (failed.length > 0) {
+      logger.warn(`${failed.length}/${batch.length} notifications ont échoué`);
+      
+      // Remettre dans la file d'attente les notifications qui ont échoué
+      // avec un délai exponentiel
+      failed.forEach((result, index) => {
+        const originalNotification = batch[index];
+        
+        // Augmenter le compteur de tentatives
+        originalNotification.retries = (originalNotification.retries || 0) + 1;
+        
+        if (originalNotification.retries < 5) {
+          this.notificationQueue.push(originalNotification);
+        } else {
+          logger.error('Notification abandonnée après 5 tentatives:', originalNotification);
+          // Stocker dans une table de notifications échouées pour revue manuelle
+        }
+      });
+    }
+  }
+
+  async send(notification) {
+    try {
+      // Valider et sécuriser la notification
+      const validatedNotification = validateNotification(notification);
+      validatedNotification.content = sanitizeContent(validatedNotification.content);
+      
+      // Vérifier les limites de débit
+      await enforceRateLimits(validatedNotification.userId);
+      
+      // Ajouter à la file d'attente
+      this.notificationQueue.push(validatedNotification);
+      
+      return { success: true, notificationId: validatedNotification.id };
+    } catch (error) {
+      logger.error('Erreur lors de l\'envoi de la notification:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async processNotification({ userId, type, templateId, variables, channels, priority, id }) {
+    try {
+      // Récupérer les préférences de l'utilisateur
+      const userPrefs = this.userPreferences.get(userId) || { channels: ['email'] };
+      
+      // Vérifier si l'utilisateur est en mode "Ne pas déranger"
+      if (userPrefs.doNotDisturb && priority !== 'urgent') {
+        const now = new Date();
+        const start = new Date(now);
+        const end = new Date(now);
+        
+        if (userPrefs.doNotDisturbStart && userPrefs.doNotDisturbEnd) {
+          const [startHours, startMinutes] = userPrefs.doNotDisturbStart.split(':');
+          const [endHours, endMinutes] = userPrefs.doNotDisturbEnd.split(':');
+          
+          start.setHours(parseInt(startHours, 10), parseInt(startMinutes, 10));
+          end.setHours(parseInt(endHours, 10), parseInt(endMinutes, 10));
+          
+          if ((now >= start && now <= end) || (start > end && (now >= start || now <= end))) {
+            // Planifier la notification pour plus tard
+            this.scheduler.scheduleNotification({
+              userId, type, templateId, variables, channels, priority, id
+            }, end);
+            return { status: 'scheduled', scheduledTime: end };
+          }
+        }
+      }
+      
+      // Déterminer les canaux effectifs (intersection des canaux demandés et des préférences)
+      const effectiveChannels = channels && channels.length > 0 
+        ? channels.filter(channel => userPrefs.channels.includes(channel))
+        : userPrefs.channels;
+      
+      if (effectiveChannels.length === 0) {
+        logger.warn(`Aucun canal disponible pour l'utilisateur ${userId}`);
+        return { status: 'skipped', reason: 'no-channels' };
+      }
+      
+      // Charger le template (avec mise en cache)
+      let template;
+      if (this.templateCache.has(templateId)) {
+        template = this.templateCache.get(templateId);
+      } else {
+        const templateRepository = require('../repositories/templateRepository');
+        template = await templateRepository.getTemplateById(templateId);
+        this.templateCache.set(templateId, template);
+      }
+      
+      if (!template) {
+        throw new Error(`Template non trouvé: ${templateId}`);
+      }
+      
+      // Rendre le contenu avec les variables
+      const content = this.renderTemplate(template, variables, userPrefs.language);
+      
+      // Envoyer sur chaque canal sélectionné
+      const results = await Promise.all(effectiveChannels.map(async channel => {
+        try {
+          switch (channel) {
+            case 'email':
+              return await this.emailProvider.send(userId, content);
+            case 'sms':
+              return await this.smsProvider.send(userId, content);
+            case 'push':
+              return await this.pushProvider.send(userId, content);
+            default:
+              logger.warn(`Canal non pris en charge: ${channel}`);
+              return { success: false, channel, error: 'unsupported-channel' };
+          }
+        } catch (error) {
+          logger.error(`Erreur lors de l'envoi sur ${channel}:`, error);
+          return { success: false, channel, error: error.message };
+        }
+      }));
+      
+      // Enregistrer l'historique des notifications
+      await this.recordNotificationHistory(id, userId, type, effectiveChannels, results);
+      
+      return { 
+        status: 'sent', 
+        channels: results,
+        success: results.some(r => r.success)
+      };
+    } catch (error) {
+      logger.error('Erreur lors du traitement de la notification:', error);
+      throw error;
+    }
+  }
+
+  renderTemplate(template, variables, language = 'fr') {
+    try {
+      // Utiliser le template correspondant à la langue de l'utilisateur
+      const templateContent = template.content[language] || template.content.fr;
+      
+      // Remplacer les variables dans le template
+      let rendered = templateContent;
+      Object.entries(variables || {}).forEach(([key, value]) => {
+        const regex = new RegExp(`{{\\s*${key}\\s*}}`, 'g');
+        rendered = rendered.replace(regex, value);
+      });
+      
+      return rendered;
+    } catch (error) {
+      logger.error('Erreur lors du rendu du template:', error);
+      return template.content.fr || 'Notification de DEI-StudyBloom';
+    }
+  }
+
+  async recordNotificationHistory(id, userId, type, channels, results) {
+    try {
+      const notificationHistoryRepository = require('../repositories/notificationHistoryRepository');
+      await notificationHistoryRepository.create({
+        id,
+        userId,
+        type,
+        channels,
+        results,
+        timestamp: new Date(),
+        status: results.some(r => r.success) ? 'sent' : 'failed'
+      });
+    } catch (error) {
+      logger.error('Erreur lors de l\'enregistrement de l\'historique des notifications:', error);
+    }
+  }
+
+  async sendBulkNotifications(notifications) {
+    const results = [];
+    
+    // Regrouper les notifications par utilisateur pour respecter les limites de débit
+    const userNotifications = new Map();
+    
+    notifications.forEach(notification => {
+      const userId = notification.userId;
+      if (!userNotifications.has(userId)) {
+        userNotifications.set(userId, []);
+      }
+      userNotifications.get(userId).push(notification);
+    });
+    
+    // Traiter chaque groupe d'utilisateurs
+    for (const [userId, userNotifs] of userNotifications.entries()) {
+      try {
+        // Vérifier les limites de débit pour cet utilisateur
+        await enforceRateLimits(userId, userNotifs.length);
+        
+        // Ajouter les notifications à la file d'attente
+        userNotifs.forEach(notification => {
+          const validatedNotification = validateNotification(notification);
+          validatedNotification.content = sanitizeContent(validatedNotification.content);
+          this.notificationQueue.push(validatedNotification);
+          results.push({ success: true, notificationId: validatedNotification.id });
+        });
+      } catch (error) {
+        logger.error(`Erreur lors de l'envoi en masse pour l'utilisateur ${userId}:`, error);
+        userNotifs.forEach(notification => {
+          results.push({ success: false, notificationId: notification.id, error: error.message });
+        });
+      }
+    }
+    
+    return results;
+  }
+
+  async updateUserPreferences(userId, preferences) {
+    try {
+      // Mettre à jour les préférences dans la base de données
+      const userRepository = require('../repositories/userRepository');
+      await userRepository.updateNotificationPreferences(userId, preferences);
+      
+      // Mettre à jour le cache local
+      if (this.userPreferences.has(userId)) {
+        const currentPrefs = this.userPreferences.get(userId);
+        this.userPreferences.set(userId, { ...currentPrefs, ...preferences });
+      } else {
+        this.userPreferences.set(userId, preferences);
+      }
+      
+      return { success: true };
+    } catch (error) {
+      logger.error(`Erreur lors de la mise à jour des préférences pour l'utilisateur ${userId}:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+}
+
+module.exports = new NotificationService();
+
+// -----------------------------------------------------
+// providers/emailProvider.js
+// -----------------------------------------------------
+
+const nodemailer = require('nodemailer');
+const { v4: uuidv4 } = require('uuid');
+const logger = require('../../utils/logger');
+const { decrypt } = require('../../utils/encryption');
+const config = require('../../config');
+
+class EmailProvider {
+  constructor() {
+    this.transporter = null;
+    this.initialized = false;
+  }
+
+  async initialize() {
+    try {
+      // Récupérer les paramètres SMTP
+      const smtpConfig = {
+        host: config.email.host,
+        port: config.email.port,
+        secure: config.email.secure,
+        auth: {
+          user: config.email.user,
+          pass: decrypt(config.email.encryptedPassword)
+        },
+        tls: {
+          rejectUnauthorized: true // Vérifier les certificats SSL
+        }
+      };
+      
+      this.transporter = nodemailer.createTransport(smtpConfig);
+      
+      // Vérifier la connexion
+      await this.transporter.verify();
+      this.initialized = true;
+      
+      logger.info('Fournisseur d\'emails initialisé avec succès');
+      return true;
+    } catch (error) {
+      logger.error('Erreur lors de l\'initialisation du fournisseur d\'emails:', error);
+      throw error;
+    }
+  }
+
+  async send(userId, content) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    try {
+      // Récupérer l'adresse email de l'utilisateur
+      const userRepository = require('../../repositories/userRepository');
+      const user = await userRepository.getUserById(userId);
+      
+      if (!user || !user.email) {
+        throw new Error(`Email non disponible pour l'utilisateur ${userId}`);
+      }
+      
+      // Construire le message
+      const messageId = uuidv4();
+      const mailOptions = {
+        from: `"DEI-StudyBloom" <${config.email.fromEmail}>`,
+        to: user.email,
+        subject: content.subject || 'Notification de DEI-StudyBloom',
+        text: content.text,
+        html: content.html,
+        headers: {
+          'X-Message-ID': messageId,
+          'X-User-ID': userId
+        }
+      };
+      
+      // Ajouter des pièces jointes si nécessaire
+      if (content.attachments && Array.isArray(content.attachments)) {
+        mailOptions.attachments = content.attachments;
+      }
+      
+      // Envoyer l'email
+      const info = await this.transporter.sendMail(mailOptions);
+      
+      logger.info(`Email envoyé à ${user.email} avec ID: ${info.messageId}`);
+      return { 
+        success: true, 
+        channel: 'email', 
+        messageId: info.messageId,
+        recipientEmail: user.email
+      };
+    } catch (error) {
+      logger.error(`Erreur lors de l'envoi de l'email à l'utilisateur ${userId}:`, error);
+      return { success: false, channel: 'email', error: error.message };
+    }
+  }
+}
+
+module.exports = { EmailProvider };
+
+// -----------------------------------------------------
+// providers/smsProvider.js
+// -----------------------------------------------------
+
+const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
+const logger = require('../../utils/logger');
+const { decrypt } = require('../../utils/encryption');
+const config = require('../../config');
+
+class SMSProvider {
+  constructor() {
+    this.apiKey = null;
+    this.apiUrl = null;
+    this.initialized = false;
+  }
+
+  async initialize() {
+    try {
+      // Récupérer les paramètres de l'API SMS
+      this.apiKey = decrypt(config.sms.encryptedApiKey);
+      this.apiUrl = config.sms.apiUrl;
+      this.from = config.sms.fromNumber;
+      
+      // Vérifier que l'API est accessible
+      await this.checkApiStatus();
+      
+      this.initialized = true;
+      logger.info('Fournisseur SMS initialisé avec succès');
+      return true;
+    } catch (error) {
+      logger.error('Erreur lors de l\'initialisation du fournisseur SMS:', error);
+      throw error;
+    }
+  }
+
+  async checkApiStatus() {
+    try {
+      const response = await axios.get(`${this.apiUrl}/status`, {
+        headers: { 'Authorization': `Bearer ${this.apiKey}` }
+      });
+      
+      if (response.status !== 200 || !response.data.success) {
+        throw new Error('L\'API SMS n\'est pas disponible');
+      }
+    } catch (error) {
+      logger.error('Erreur lors de la vérification de l\'API SMS:', error);
+      throw new Error('Impossible de se connecter à l\'API SMS');
+    }
+  }
+
+  async send(userId, content) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    try {
+      // Récupérer le numéro de téléphone de l'utilisateur
+      const userRepository = require('../../repositories/userRepository');
+      const user = await userRepository.getUserById(userId);
+      
+      if (!user || !user.phoneNumber) {
+        throw new Error(`Numéro de téléphone non disponible pour l'utilisateur ${userId}`);
+      }
+      
+      // Nettoyer le numéro de téléphone
+      const phoneNumber = this.formatPhoneNumber(user.phoneNumber);
+      
+      // Extraire le texte simple
+      const text = content.text || this.stripHtml(content.html) || 'Notification de DEI-StudyBloom';
+      
+      // Limiter la longueur du message SMS
+      const smsText = text.length > 160 ? text.substring(0, 157) + '...' : text;
+      
+      // Générer un ID unique pour le message
+      const messageId = uuidv4();
+      
+      // Envoyer le SMS via l'API
+      const response = await axios.post(`${this.apiUrl}/send`, {
+        from: this.from,
+        to: phoneNumber,
+        text: smsText,
+        reference: messageId
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.data.success) {
+        throw new Error(response.data.message || 'Échec de l\'envoi du SMS');
+      }
+      
+      logger.info(`SMS envoyé à ${phoneNumber}`);
+      return { 
+        success: true, 
+        channel: 'sms', 
+        messageId: messageId,
+        recipientPhone: phoneNumber
+      };
+    } catch (error) {
+      logger.error(`Erreur lors de l'envoi du SMS à l'utilisateur ${userId}:`, error);
+      return { success: false, channel: 'sms', error: error.message };
+    }
+  }
+
+  formatPhoneNumber(phoneNumber) {
+    // Supprimer tous les caractères non numériques
+    let cleaned = phoneNumber.replace(/\D/g, '');
+    
+    // S'assurer que le numéro commence par le code pays
+    if (!cleaned.startsWith('33') && cleaned.startsWith('0')) {
+      cleaned = '33' + cleaned.substring(1);
+    }
+    
+    // Si aucun code pays n'est présent, ajouter le code français
+    if (!/^[1-9]\d{1,3}/.test(cleaned)) {
+      cleaned = '33' + cleaned;
+    }
+    
+    return '+' + cleaned;
+  }
+
+  stripHtml(html) {
+    if (!html) return '';
+    return html.replace(/<[^>]*>?/gm, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim();
+  }
+}
+
+module.exports = { SMSProvider };
+
+// -----------------------------------------------------
+// providers/pushProvider.js
+// -----------------------------------------------------
+
+const firebase = require('firebase-admin');
+const { v4: uuidv4 } = require('uuid');
+const logger = require('../../utils/logger');
+const config = require('../../config');
+
+class PushProvider {
+  constructor() {
+    this.firebaseApp = null;
+    this.initialized = false;
+  }
+
+  async initialize() {
+    try {
+      // Initialiser Firebase si ce n'est pas déjà fait
+      if (!firebase.apps.length) {
+        // En production, charger les credentials depuis un fichier sécurisé
+        const serviceAccount = require(config.push.firebaseCredentialsPath);
+        
+        this.firebaseApp = firebase.initializeApp({
+          credential: firebase.credential.cert(serviceAccount),
+          databaseURL: config.push.firebaseDatabaseURL
+        });
+      } else {
+        this.firebaseApp = firebase.apps[0];
+      }
+      
+      this.initialized = true;
+      logger.info('Fournisseur de notifications push initialisé avec succès');
+      return true;
+    } catch (error) {
+      logger.error('Erreur lors de l\'initialisation du fournisseur de notifications push:', error);
+      throw error;
+    }
+  }
+
+  async send(userId, content) {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    try {
+      // Récupérer les tokens FCM de l'utilisateur
+      const userDeviceRepository = require('../../repositories/userDeviceRepository');
+      const devices = await userDeviceRepository.getUserDevices(userId);
+      
+      if (!devices || devices.length === 0) {
+        throw new Error(`Aucun appareil enregistré pour l'utilisateur ${userId}`);
+      }
+      
+      // Générer un ID unique pour la notification
+      const notificationId = uuidv4();
+      
+      // Préparer la notification
+      const notification = {
+        title: content.subject || 'DEI-StudyBloom',
+        body: content.text || this.stripHtml(content.html) || 'Nouvelle notification',
+      };
+      
+      // Préparer les données supplémentaires
+      const data = {
+        notificationId: notificationId,
+        userId: userId.toString(),
+        type: content.type || 'general',
+        url: content.url || '',
+        timestamp: new Date().toISOString()
+      };
+      
+      // Envoyer la notification à tous les appareils de l'utilisateur
+      const sendPromises = devices.map(async device => {
+        try {
+          const message = {
+            notification: notification,
+            data: data,
+            token: device.fcmToken
+          };
+          
+          const response = await firebase.messaging().send(message);
+          return { deviceId: device.id, success: true, messageId: response };
+        } catch (error) {
+          logger.error(`Erreur lors de l'envoi de la notification push à l'appareil ${device.id}:`, error);
+          
+          // Si le token n'est plus valide, le marquer comme tel dans la base de données
+          if (error.code === 'messaging/invalid-registration-token' || 
+              error.code === 'messaging/registration-token-not-registered') {
+            await userDeviceRepository.updateDeviceStatus(device.id, 'invalid');
+          }
+          
+          return { deviceId: device.id, success: false, error: error.code };
+        }
+      });
+      
+      const results = await Promise.all(sendPromises);
+      const successCount = results.filter(r => r.success).length;
+      
+      if (successCount === 0) {
+        throw new Error('Échec de l\'envoi à tous les appareils');
+      }
+      
+      logger.info(`Notification push envoyée à ${successCount}/${devices.length} appareils de l'utilisateur ${userId}`);
+      return { 
+        success: true, 
+        channel: 'push', 
+        messageId: notificationId,
+        sentTo: successCount,
+        totalDevices: devices.length,
+        results: results
+      };
+    } catch (error) {
+      logger.error(`Erreur lors de l'envoi de la notification push à l'utilisateur ${userId}:`, error);
+      return { success: false, channel: 'push', error: error.message };
+    }
+  }
+
+  stripHtml(html) {
+    if (!html) return '';
+    return html.replace(/<[^>]*>?/gm, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim();
+  }
+}
+
+module.exports = { PushProvider };
+
+// -----------------------------------------------------
+// scheduler.js - Planificateur de notifications
+// -----------------------------------------------------
+
+const cron = require('node-cron');
+const logger = require('../utils/logger');
+
+class NotificationScheduler {
+  constructor() {
+    this.scheduledNotifications = new Map();
+    this.recurringTasks = new Map();
+    this.notificationService = null;
+  }
+
+  async initialize(notificationService) {
+    this.notificationService = notificationService;
+    
+    try {
+      // Charger les notifications planifiées depuis la base de données
+      await this.loadScheduledNotifications();
+      
+      // Démarrer le traitement des notifications planifiées
+      this.startScheduler();
+      
+      // Configurer les tâches récurrentes prédéfinies
+      this.setupPredefinedTasks();
+      
+      logger.info('Planificateur de notifications initialisé avec succès');
+      return true;
+    } catch (error) {
+      logger.error('Erreur lors de l\'initialisation du planificateur:', error);
+      throw error;
+    }
+  }
+
+  async loadScheduledNotifications() {
+    try {
+      const scheduledNotificationRepository = require('../repositories/scheduledNotificationRepository');
+      const notifications = await scheduledNotificationRepository.getPendingNotifications();
+      
+      notifications.forEach(notification => {
+        this.scheduleNotification(notification.data, new Date(notification.scheduledTime), notification.id);
+      });
+      
+      logger.info(`${notifications.length} notifications planifiées chargées`);
+    } catch (error) {
+      logger.error('Erreur lors du chargement des notifications planifiées:', error);
+      throw error;
+    }
+  }
+
+  startScheduler() {
+    // Vérifier toutes les minutes s'il y a des notifications à envoyer
+    this.checkInterval = setInterval(() => this.checkScheduledNotifications(), 60000);
+    logger.info('Planificateur de notifications démarré');
+  }
+
+  setupPredefinedTasks() {
+    // Exemple : Rappels de documents manquants tous les lundis à 9h
+    this.createRecurringTask('missing-documents-reminder', '0 9 * * 1', async () => {
+      try {
+        const studentRepository = require('../repositories/studentRepository');
+        const students = await studentRepository.getStudentsWithMissingDocuments();
+        
+        if (students.length > 0) {
+          const notifications = students.map(student => ({
+            userId: student.userId,
+            type: 'document-reminder',
+            templateId: 'missing-documents',
+            variables: {
+              firstName: student.firstName,
+              documentsList: student.missingDocuments.join(', ')
+            },
+            channels: ['email', 'push'],
+            priority: 'normal',
+            id: `doc-reminder-${student.id}-${Date.now()}`
+          }));
+          
+          await this.notificationService.sendBulkNotifications(notifications);
+          logger.info(`Rappels de documents envoyés à ${students.length} étudiants`);
+        }
+      } catch (error) {
+        logger.error('Erreur lors de l\'envoi des rappels de documents:', error);
+      }
+    });
+    
+    // Exemple : Rappels de délais qui approchent tous les jours à 10h
+    this.createRecurringTask('deadline-reminders', '0 10 * * *', async () => {
+      try {
+        const deadlineRepository = require('../repositories/deadlineRepository');
+        const upcomingDeadlines = await deadlineRepository.getUpcomingDeadlines(7); // 7 jours
+        
+        const notificationsByUser = new Map();
+        
+        upcomingDeadlines.forEach(deadline => {
+          const userId = deadline.userId;
+          if (!notificationsByUser.has(userId)) {
+            notificationsByUser.set(userId, []);
+          }
+          
+          notificationsByUser.get(userId).push({
+            name: deadline.name,
+            date: deadline.date,
+            daysLeft: deadline.daysLeft
+          });
+        });
+        
+        const notifications = [];
+        for (const [userId, deadlines] of notificationsByUser.entries()) {
+          notifications.push({
+            userId,
+            type: 'deadline-reminder',
+            templateId: 'upcoming-deadlines',
+            variables: {
+              deadlinesCount: deadlines.length,
+              deadlinesList: deadlines.map(d => `${d.name} (${d.daysLeft} jours)`).join('\n')
+            },
+            channels: ['email', 'push'],
+            priority: 'normal',
+id: `deadline-reminder-${userId}-${Date.now()}`
+          });
+        }
+        
+        if (notifications.length > 0) {
+          await this.notificationService.sendBulkNotifications(notifications);
+          logger.info(`Rappels de délais envoyés pour ${notifications.length} utilisateurs`);
+        }
+      } catch (error) {
+        logger.error('Erreur lors de l\'envoi des rappels de délais:', error);
+      }
+    });
+  }
+
+  createRecurringTask(taskId, cronExpression, callback) {
+    try {
+      // Valider l'expression cron
+      if (!cron.validate(cronExpression)) {
+        throw new Error(`Expression cron invalide: ${cronExpression}`);
+      }
+      
+      // Annuler la tâche existante si elle existe
+      if (this.recurringTasks.has(taskId)) {
+        this.recurringTasks.get(taskId).stop();
+      }
+      
+      // Planifier la nouvelle tâche
+      const task = cron.schedule(cronExpression, callback, {
+        scheduled: true,
+        timezone: "Europe/Paris" // Fuseau horaire français
+      });
+      
+      this.recurringTasks.set(taskId, task);
+      logger.info(`Tâche récurrente '${taskId}' planifiée: ${cronExpression}`);
+      
+      return taskId;
+    } catch (error) {
+      logger.error(`Erreur lors de la création de la tâche récurrente '${taskId}':`, error);
+      throw error;
+    }
+  }
+
+  async scheduleNotification(notification, scheduledTime, existingId = null) {
+    try {
+      const now = new Date();
+      const scheduleDate = scheduledTime instanceof Date ? scheduledTime : new Date(scheduledTime);
+      
+      if (isNaN(scheduleDate.getTime())) {
+        throw new Error('Date de planification invalide');
+      }
+      
+      // Générer un ID si non fourni
+      const id = existingId || `scheduled-${notification.userId}-${Date.now()}`;
+      
+      // Enregistrer dans la base de données
+      const scheduledNotificationRepository = require('../repositories/scheduledNotificationRepository');
+      await scheduledNotificationRepository.createOrUpdate(id, {
+        data: notification,
+        scheduledTime: scheduleDate,
+        created: now,
+        status: 'pending'
+      });
+      
+      // Ajouter à la liste de notifications planifiées en mémoire
+      this.scheduledNotifications.set(id, {
+        notification,
+        scheduledTime: scheduleDate
+      });
+      
+      logger.info(`Notification ${id} planifiée pour ${scheduleDate.toISOString()}`);
+      return { success: true, id, scheduledTime: scheduleDate };
+    } catch (error) {
+      logger.error('Erreur lors de la planification de la notification:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async cancelScheduledNotification(id) {
+    try {
+      // Supprimer de la liste en mémoire
+      this.scheduledNotifications.delete(id);
+      
+      // Mettre à jour dans la base de données
+      const scheduledNotificationRepository = require('../repositories/scheduledNotificationRepository');
+      await scheduledNotificationRepository.updateStatus(id, 'cancelled');
+      
+      logger.info(`Notification planifiée ${id} annulée`);
+      return { success: true };
+    } catch (error) {
+      logger.error(`Erreur lors de l'annulation de la notification planifiée ${id}:`, error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  checkScheduledNotifications() {
+    const now = new Date();
+    const toProcess = [];
+    
+    // Rechercher les notifications à envoyer
+    for (const [id, { notification, scheduledTime }] of this.scheduledNotifications.entries()) {
+      if (scheduledTime <= now) {
+        toProcess.push({ id, notification });
+        this.scheduledNotifications.delete(id);
+      }
+    }
+    
+    // Traiter les notifications à envoyer
+    if (toProcess.length > 0) {
+      logger.info(`Traitement de ${toProcess.length} notifications planifiées`);
+      
+      toProcess.forEach(async ({ id, notification }) => {
+        try {
+          await this.notificationService.send(notification);
+          
+          // Mettre à jour le statut dans la base de données
+          const scheduledNotificationRepository = require('../repositories/scheduledNotificationRepository');
+          await scheduledNotificationRepository.updateStatus(id, 'sent');
+        } catch (error) {
+          logger.error(`Erreur lors de l'envoi de la notification planifiée ${id}:`, error);
+          
+          // Mettre à jour le statut dans la base de données
+          const scheduledNotificationRepository = require('../repositories/scheduledNotificationRepository');
+          await scheduledNotificationRepository.updateStatus(id, 'failed', error.message);
+        }
+      });
+    }
+  }
+}
+
+module.exports = NotificationScheduler;
+
+// -----------------------------------------------------
+// security.js - Sécurité et rate limiting
+// -----------------------------------------------------
+
+const Redis = require('ioredis');
+const { v4: uuidv4 } = require('uuid');
+const logger = require('../utils/logger');
+const config = require('../config');
+
+// Client Redis pour le rate limiting
+const redisClient = new Redis(config.redis.url, {
+  password: config.redis.password,
+  tls: config.redis.useTLS ? {} : undefined
+});
+
+// Limites de débit par défaut
+const DEFAULT_RATE_LIMITS = {
+  perSecond: 2,      // max 2 notifications par seconde
+  perMinute: 10,     // max 10 notifications par minute
+  perHour: 50,       // max 50 notifications par heure
+  perDay: 200        // max 200 notifications par jour
+};
+
+// Durée de vie des règles de limitation de débit
+const RATE_LIMIT_EXPIRY = {
+  perSecond: 2,      // 2 secondes
+  perMinute: 60,     // 60 secondes
+  perHour: 3600,     // 1 heure
+  perDay: 86400      // 24 heures
+};
+
+/**
+ * Applique les limites de débit pour un utilisateur
+ * @param {string} userId - ID de l'utilisateur
+ * @param {number} count - Nombre de notifications à envoyer (défaut: 1)
+ * @returns {Promise<boolean>} - true si les limites sont respectées
+ */
+async function enforceRateLimits(userId, count = 1) {
+  try {
+    // Récupérer les limites de débit spécifiques à l'utilisateur (ou utiliser les valeurs par défaut)
+    const userRepository = require('../repositories/userRepository');
+    const user = await userRepository.getUserById(userId);
+    
+    const limits = user && user.notificationRateLimits 
+      ? user.notificationRateLimits 
+      : DEFAULT_RATE_LIMITS;
+    
+    // Vérifier toutes les limites
+    const now = Math.floor(Date.now() / 1000); // timestamp unix en secondes
+    const keyPrefix = `rate-limit:notification:${userId}`;
+    
+    const pipeline = redisClient.pipeline();
+    
+    // Vérifier la limite par seconde
+    const secondKey = `${keyPrefix}:second:${now}`;
+    pipeline.incrby(secondKey, count);
+    pipeline.expire(secondKey, RATE_LIMIT_EXPIRY.perSecond);
+    
+    // Vérifier la limite par minute
+    const minuteKey = `${keyPrefix}:minute:${Math.floor(now / 60)}`;
+    pipeline.incrby(minuteKey, count);
+    pipeline.expire(minuteKey, RATE_LIMIT_EXPIRY.perMinute);
+    
+    // Vérifier la limite par heure
+    const hourKey = `${keyPrefix}:hour:${Math.floor(now / 3600)}`;
+    pipeline.incrby(hourKey, count);
+    pipeline.expire(hourKey, RATE_LIMIT_EXPIRY.perHour);
+    
+    // Vérifier la limite par jour
+    const dayKey = `${keyPrefix}:day:${Math.floor(now / 86400)}`;
+    pipeline.incrby(dayKey, count);
+    pipeline.expire(dayKey, RATE_LIMIT_EXPIRY.perDay);
+    
+    // Exécuter toutes les commandes
+    const results = await pipeline.exec();
+    
+    // Vérifier les résultats
+    if (results[0][1] > limits.perSecond) {
+      throw new Error(`Limite de débit par seconde dépassée (${results[0][1]}/${limits.perSecond})`);
+    }
+    
+    if (results[2][1] > limits.perMinute) {
+      throw new Error(`Limite de débit par minute dépassée (${results[2][1]}/${limits.perMinute})`);
+    }
+    
+    if (results[4][1] > limits.perHour) {
+      throw new Error(`Limite de débit par heure dépassée (${results[4][1]}/${limits.perHour})`);
+    }
+    
+    if (results[6][1] > limits.perDay) {
+      throw new Error(`Limite de débit par jour dépassée (${results[6][1]}/${limits.perDay})`);
+    }
+    
+    return true;
+  } catch (error) {
+    logger.error(`Erreur de limitation de débit pour l'utilisateur ${userId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Assainit le contenu des notifications
+ * @param {Object} content - Contenu de la notification
+ * @returns {Object} - Contenu assaini
+ */
+function sanitizeContent(content) {
+  if (!content) return {};
+  
+  const sanitized = { ...content };
+  
+  // Assainir le texte
+  if (sanitized.text) {
+    sanitized.text = sanitizeText(sanitized.text);
+  }
+  
+  // Assainir l'HTML
+  if (sanitized.html) {
+    sanitized.html = sanitizeHtml(sanitized.html);
+  }
+  
+  // Assainir le sujet
+  if (sanitized.subject) {
+    sanitized.subject = sanitizeText(sanitized.subject);
+  }
+  
+  // Assainir l'URL
+  if (sanitized.url) {
+    sanitized.url = sanitizeUrl(sanitized.url);
+  }
+  
+  return sanitized;
+}
+
+/**
+ * Assainit un texte
+ * @param {string} text - Texte à assainir
+ * @returns {string} - Texte assaini
+ */
+function sanitizeText(text) {
+  if (!text) return '';
+  
+  // Échapper les caractères spéciaux
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Assainit un code HTML
+ * @param {string} html - HTML à assainir
+ * @returns {string} - HTML assaini
+ */
+function sanitizeHtml(html) {
+  if (!html) return '';
+  
+  const allowedTags = ['p', 'br', 'b', 'i', 'u', 'strong', 'em', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'a', 'img', 'span', 'div', 'table', 'tr', 'td', 'th', 'thead', 'tbody'];
+  const allowedAttributes = {
+    'a': ['href', 'target', 'rel'],
+    'img': ['src', 'alt', 'width', 'height'],
+    'div': ['style'],
+    'span': ['style'],
+    'p': ['style'],
+    'table': ['style', 'border'],
+    'td': ['style', 'align', 'valign'],
+    'th': ['style', 'align', 'valign']
+  };
+  
+  try {
+    // Pour une implémentation complète, utilisez une bibliothèque comme DOMPurify
+    // Ceci est une version simplifiée
+    
+    // Convertir en minuscules
+    let sanitized = html.toLowerCase();
+    
+    // Supprimer les balises script et les événements onX
+    sanitized = sanitized.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/on\w+="[^"]*"/gi, '')
+      .replace(/on\w+='[^']*'/gi, '')
+      .replace(/on\w+=\w+/gi, '');
+    
+    // Supprimer les commentaires
+    sanitized = sanitized.replace(/<!--[\s\S]*?-->/g, '');
+    
+    // Supprimer les iframes
+    sanitized = sanitized.replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '');
+    
+    // Traiter les liens (forcer l'ouverture dans un nouvel onglet et ajouter noopener)
+    sanitized = sanitized.replace(/<a\s+([^>]*)href=["']([^"']*)["']([^>]*)>/gi, (match, before, href, after) => {
+      // Vérifier si l'URL est sécurisée
+      const safeHref = sanitizeUrl(href);
+      return `<a ${before}href="${safeHref}" target="_blank" rel="noopener noreferrer" ${after}>`;
+    });
+    
+    return sanitized;
+  } catch (error) {
+    logger.error('Erreur lors de l\'assainissement du HTML:', error);
+    
+    // En cas d'erreur, supprimer tout le HTML
+    return html.replace(/<[^>]*>/g, '');
+  }
+}
+
+/**
+ * Assainit une URL
+ * @param {string} url - URL à assainir
+ * @returns {string} - URL assainie
+ */
+function sanitizeUrl(url) {
+  if (!url) return '';
+  
+  try {
+    // Vérifier si l'URL est relative ou absolue
+    if (url.startsWith('/')) {
+      // URL relative, acceptée telle quelle
+      return url;
+    }
+    
+    // Vérifier si l'URL est absolue et utilise un protocole sécurisé
+    const urlObj = new URL(url);
+    
+    // N'autoriser que HTTP et HTTPS
+    if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
+      throw new Error('Protocole non autorisé');
+    }
+    
+    // Vérifier s'il y a des caractères suspects
+    if (url.includes('javascript:') || url.includes('data:') || url.includes('vbscript:')) {
+      throw new Error('URL potentiellement dangereuse');
+    }
+    
+    return url;
+  } catch (error) {
+    logger.error('URL invalide ou dangereuse:', error);
+    return '#'; // URL de repli
+  }
+}
+
+module.exports = {
+  enforceRateLimits,
+  sanitizeContent,
+  sanitizeText,
+  sanitizeHtml,
+  sanitizeUrl
+};
+
+// -----------------------------------------------------
+// validator.js - Validation des données
+// -----------------------------------------------------
+
+const Joi = require('joi');
+const { v4: uuidv4 } = require('uuid');
+const logger = require('../utils/logger');
+
+// Schéma de validation pour les notifications
+const notificationSchema = Joi.object({
+  id: Joi.string().default(() => uuidv4()),
+  userId: Joi.alternatives().try(
+    Joi.string().required(),
+    Joi.number().integer().required()
+  ).required(),
+  type: Joi.string().required(),
+  templateId: Joi.string().required(),
+  variables: Joi.object().default({}),
+  content: Joi.object({
+    subject: Joi.string(),
+    text: Joi.string(),
+    html: Joi.string(),
+    attachments: Joi.array().items(Joi.object({
+      filename: Joi.string().required(),
+      content: Joi.alternatives().try(
+        Joi.string(),
+        Joi.binary()
+      ),
+      path: Joi.string(),
+      contentType: Joi.string()
+    }))
+  }).default({}),
+  channels: Joi.array().items(
+    Joi.string().valid('email', 'sms', 'push')
+  ).default(['email']),
+  priority: Joi.string().valid('low', 'normal', 'high', 'urgent').default('normal'),
+  retries: Joi.number().integer().min(0).default(0),
+  metadata: Joi.object().default({})
+}).required();
+
+// Schéma de validation pour les préférences utilisateur
+const userPreferencesSchema = Joi.object({
+  channels: Joi.array().items(
+    Joi.string().valid('email', 'sms', 'push')
+  ),
+  frequency: Joi.string().valid('immediate', 'hourly', 'daily', 'weekly'),
+  doNotDisturb: Joi.boolean(),
+  doNotDisturbStart: Joi.string().pattern(/^([01]\d|2[0-3]):([0-5]\d)$/),
+  doNotDisturbEnd: Joi.string().pattern(/^([01]\d|2[0-3]):([0-5]\d)$/),
+  language: Joi.string().length(2)
+});
+
+/**
+ * Valide et normalise une notification
+ * @param {Object} notification - Objet de notification à valider
+ * @returns {Object} - Notification validée et normalisée
+ */
+function validateNotification(notification) {
+  try {
+    const { value, error } = notificationSchema.validate(notification, { 
+      abortEarly: false,
+      stripUnknown: true
+    });
+    
+    if (error) {
+      const details = error.details.map(d => d.message).join('; ');
+      throw new Error(`Validation échouée: ${details}`);
+    }
+    
+    return value;
+  } catch (error) {
+    logger.error('Erreur de validation de la notification:', error);
+    throw error;
+  }
+}
+
+/**
+ * Valide et normalise les préférences utilisateur
+ * @param {Object} preferences - Préférences à valider
+ * @returns {Object} - Préférences validées et normalisées
+ */
+function validateUserPreferences(preferences) {
+  try {
+    const { value, error } = userPreferencesSchema.validate(preferences, { 
+      abortEarly: false,
+      stripUnknown: true
+    });
+    
+    if (error) {
+      const details = error.details.map(d => d.message).join('; ');
+      throw new Error(`Validation échouée: ${details}`);
+    }
+    
+    return value;
+  } catch (error) {
+    logger.error('Erreur de validation des préférences utilisateur:', error);
+    throw error;
+  }
+}
+
+module.exports = {
+  validateNotification,
+  validateUserPreferences
+};
+
+// -----------------------------------------------------
+// index.js - Point d'entrée du module de notification
+// -----------------------------------------------------
+
+const notificationService = require('./notificationService');
+const logger = require('../utils/logger');
+
+// Initialiser le service au démarrage
+async function initializeNotificationSystem() {
+  try {
+    await notificationService.initialize();
+    logger.info('Système de notification initialisé avec succès');
+    return true;
+  } catch (error) {
+    logger.error('Erreur lors de l\'initialisation du système de notification:', error);
+    throw error;
+  }
+}
+
+// Exposer l'API du module de notification
+module.exports = {
+  // Méthodes principales
+  initialize: initializeNotificationSystem,
+  send: notificationService.send.bind(notificationService),
+  sendBulk: notificationService.sendBulkNotifications.bind(notificationService),
+  scheduleNotification: (notification, scheduledTime) => {
+    return notificationService.scheduler.scheduleNotification(notification, scheduledTime);
+  },
+  
+  // Gestion des préférences utilisateur
+  updateUserPreferences: notificationService.updateUserPreferences.bind(notificationService),
+  
+  // Gestion des tâches récurrentes
+  createRecurringTask: (taskId, cronExpression, callback) => {
+    return notificationService.scheduler.createRecurringTask(taskId, cronExpression, callback);
+  },
+  
+  // Méthodes utilitaires
+  getQueueStatus: () => {
+    return {
+      length: notificationService.notificationQueue.length,
+      processing: notificationService.notificationQueue.filter(n => n.processing).length
+    };
+  }
+};
