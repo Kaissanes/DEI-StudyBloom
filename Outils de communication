@@ -1,0 +1,1560 @@
+/**
+ * DEI-StudyBloom - Module d'outils de communication
+ * 
+ * Ce module implémente:
+ * 1. Une messagerie interne sécurisée
+ * 2. Un système de support multilingue
+ * 3. Un chatbot d'assistance intelligent
+ * 
+ * Auteur: Tareck
+ * Date: 14/04/2025
+ */
+
+// ============== CONFIGURATION PRINCIPALE ==============
+const CONFIG = {
+  security: {
+    tokenExpiration: '24h',
+    passwordMinLength: 12,
+    rateLimit: {
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 100 // limite à 100 requêtes par fenêtre
+    },
+    csrfProtection: true
+  },
+  messaging: {
+    maxAttachmentSize: 5 * 1024 * 1024, // 5MB
+    allowedMimeTypes: ['image/jpeg', 'image/png', 'application/pdf', 'text/plain'],
+    messageRetentionDays: 365 // conservation des messages pendant 1 an
+  },
+  languages: ['fr', 'en', 'es', 'de', 'zh', 'ar', 'ru', 'pt', 'ja', 'ko'],
+  chatbot: {
+    defaultLanguage: 'fr',
+    contextRetentionMessages: 10,
+    modelVersion: 'v2.0'
+  }
+};
+
+// ============== MESSAGERIE INTERNE ==============
+class SecureMessaging {
+  constructor(database, authService) {
+    this.db = database;
+    this.auth = authService;
+    this.encryptionService = new EncryptionService();
+  }
+
+  /**
+   * Envoie un message sécurisé entre utilisateurs
+   * @param {Object} messageData - Données du message
+   * @returns {Promise<Object>} - Message créé
+   */
+  async sendMessage(messageData) {
+    try {
+      // Validation des entrées
+      this._validateMessageData(messageData);
+      
+      // Vérification des permissions
+      await this._checkPermissions(messageData.senderId, messageData.recipientId);
+      
+      // Traitement des pièces jointes
+      if (messageData.attachments && messageData.attachments.length > 0) {
+        messageData.attachments = await this._processAttachments(messageData.attachments);
+      }
+      
+      // Chiffrement du contenu du message
+      messageData.content = await this.encryptionService.encrypt(messageData.content);
+      
+      // Horodatage et métadonnées
+      const now = new Date();
+      const messageToSave = {
+        ...messageData,
+        createdAt: now,
+        status: 'sent',
+        readAt: null
+      };
+      
+      // Sauvegarde en base de données
+      const savedMessage = await this.db.messages.create(messageToSave);
+      
+      // Notification
+      await this._notifyRecipient(messageData.recipientId, {
+        type: 'newMessage',
+        senderId: messageData.senderId,
+        messageId: savedMessage.id,
+        timestamp: now
+      });
+      
+      // Journal d'audit pour la conformité
+      await this._logAudit('messageSent', {
+        messageId: savedMessage.id,
+        senderId: messageData.senderId,
+        recipientId: messageData.recipientId
+      });
+      
+      return {
+        id: savedMessage.id,
+        createdAt: savedMessage.createdAt,
+        status: savedMessage.status
+      };
+    } catch (error) {
+      console.error('Erreur lors de l'envoi du message:', error);
+      throw new MessageError('MESSAGE_SEND_FAILED', error.message);
+    }
+  }
+  
+  /**
+   * Récupère les conversations d'un utilisateur
+   * @param {string} userId - ID de l'utilisateur
+   * @param {Object} options - Options de pagination et filtres
+   * @returns {Promise<Array>} - Liste des conversations
+   */
+  async getConversations(userId, options = {}) {
+    try {
+      // Vérification d'authentification
+      await this.auth.validateUserAccess(userId);
+      
+      const defaultOptions = {
+        page: 1,
+        limit: 20,
+        sortBy: 'updatedAt',
+        sortDirection: 'desc'
+      };
+      
+      const queryOptions = { ...defaultOptions, ...options };
+      
+      // Construction de la requête avec pagination
+      const query = {
+        $or: [
+          { 'participants.senderId': userId },
+          { 'participants.recipientId': userId }
+        ],
+        deletedFor: { $ne: userId }
+      };
+      
+      // Application des filtres supplémentaires
+      if (options.filters) {
+        if (options.filters.unreadOnly) query.readAt = null;
+        if (options.filters.withAttachments) query['attachments.0'] = { $exists: true };
+        if (options.filters.fromDate) query.createdAt = { $gte: new Date(options.filters.fromDate) };
+      }
+      
+      // Exécution de la requête
+      const skip = (queryOptions.page - 1) * queryOptions.limit;
+      const conversations = await this.db.conversations
+        .find(query)
+        .sort({ [queryOptions.sortBy]: queryOptions.sortDirection === 'desc' ? -1 : 1 })
+        .skip(skip)
+        .limit(queryOptions.limit)
+        .lean();
+        
+      // Déchiffrement des données sensibles et formatage
+      return await Promise.all(conversations.map(async conv => {
+        // Déchiffrement du dernier message
+        if (conv.lastMessage && conv.lastMessage.content) {
+          conv.lastMessage.content = await this.encryptionService.decrypt(conv.lastMessage.content);
+        }
+        
+        // Enrichissement avec des données utilisateur
+        const participants = await this._enrichParticipantsData(conv.participants);
+        
+        return {
+          ...conv,
+          participants,
+          unreadCount: await this._countUnreadMessages(conv.id, userId)
+        };
+      }));
+    } catch (error) {
+      console.error('Erreur lors de la récupération des conversations:', error);
+      throw new MessageError('CONVERSATIONS_FETCH_FAILED', error.message);
+    }
+  }
+  
+  /**
+   * Marque un message comme lu
+   * @param {string} messageId - ID du message
+   * @param {string} userId - ID de l'utilisateur
+   * @returns {Promise<boolean>} - Succès de l'opération
+   */
+  async markAsRead(messageId, userId) {
+    try {
+      // Vérification d'authentification
+      await this.auth.validateUserAccess(userId);
+      
+      // Vérification que l'utilisateur est bien le destinataire
+      const message = await this.db.messages.findOne({
+        _id: messageId,
+        recipientId: userId
+      });
+      
+      if (!message) {
+        throw new MessageError('MESSAGE_NOT_FOUND', 'Le message n\'existe pas ou vous n\'avez pas les permissions');
+      }
+      
+      // Mise à jour du statut de lecture
+      await this.db.messages.updateOne(
+        { _id: messageId },
+        { 
+          $set: { 
+            readAt: new Date(),
+            status: 'read'
+          } 
+        }
+      );
+      
+      // Mise à jour des compteurs de notifications
+      await this.db.users.updateOne(
+        { _id: userId },
+        { $inc: { 'notifications.unreadMessages': -1 } }
+      );
+      
+      return true;
+    } catch (error) {
+      console.error('Erreur lors du marquage comme lu:', error);
+      throw new MessageError('MARK_READ_FAILED', error.message);
+    }
+  }
+  
+  // Méthodes privées
+  
+  _validateMessageData(messageData) {
+    const requiredFields = ['senderId', 'recipientId', 'content'];
+    for (const field of requiredFields) {
+      if (!messageData[field]) {
+        throw new ValidationError(`Le champ ${field} est requis`);
+      }
+    }
+    
+    // Validation des pièces jointes
+    if (messageData.attachments) {
+      for (const attachment of messageData.attachments) {
+        if (attachment.size > CONFIG.messaging.maxAttachmentSize) {
+          throw new ValidationError(`La pièce jointe ${attachment.name} dépasse la taille maximale autorisée`);
+        }
+        
+        if (!CONFIG.messaging.allowedMimeTypes.includes(attachment.type)) {
+          throw new ValidationError(`Le type de fichier ${attachment.type} n'est pas autorisé`);
+        }
+      }
+    }
+  }
+  
+  async _checkPermissions(senderId, recipientId) {
+    // Vérification que l'expéditeur existe et est actif
+    const sender = await this.db.users.findOne({ _id: senderId, status: 'active' });
+    if (!sender) {
+      throw new AccessError('SENDER_NOT_FOUND', 'L\'expéditeur n\'existe pas ou est désactivé');
+    }
+    
+    // Vérification que le destinataire existe
+    const recipient = await this.db.users.findOne({ _id: recipientId });
+    if (!recipient) {
+      throw new AccessError('RECIPIENT_NOT_FOUND', 'Le destinataire n\'existe pas');
+    }
+    
+    // Vérification des restrictions de communication
+    const blockedUsers = await this.db.blockList.findOne({
+      userId: recipientId,
+      blockedUsers: { $in: [senderId] }
+    });
+    
+    if (blockedUsers) {
+      throw new AccessError('RECIPIENT_BLOCKED_SENDER', 'Vous ne pouvez pas envoyer de message à cet utilisateur');
+    }
+    
+    // Vérification des rôles et permissions
+    const canSend = await this.auth.checkPermission(senderId, 'SEND_MESSAGE');
+    if (!canSend) {
+      throw new AccessError('INSUFFICIENT_PERMISSIONS', 'Vous n\'avez pas la permission d\'envoyer des messages');
+    }
+  }
+  
+  async _processAttachments(attachments) {
+    // Traitement et sécurisation des pièces jointes
+    return Promise.all(attachments.map(async attachment => {
+      // Scan antivirus
+      const scanResult = await this._scanAttachment(attachment);
+      if (!scanResult.clean) {
+        throw new SecurityError('ATTACHMENT_VIRUS_DETECTED', 'Virus détecté dans la pièce jointe');
+      }
+      
+      // Génération d'un nom de fichier sécurisé
+      const secureFilename = this._generateSecureFilename(attachment.name);
+      
+      // Stockage sécurisé du fichier
+      const storedFile = await this._storeAttachment(attachment.data, secureFilename, attachment.type);
+      
+      return {
+        originalName: attachment.name,
+        storedName: secureFilename,
+        mimeType: attachment.type,
+        size: attachment.size,
+        url: storedFile.url,
+        thumbnailUrl: attachment.type.startsWith('image/') ? storedFile.thumbnailUrl : null
+      };
+    }));
+  }
+  
+  async _scanAttachment(attachment) {
+    // Implémentation du scan antivirus
+    // Ceci est un exemple simplifié - intégrez ici votre service AV préféré
+    return { clean: true };
+  }
+  
+  _generateSecureFilename(originalName) {
+    const timestamp = Date.now();
+    const randomString = Math.random().toString(36).substring(2, 15);
+    const extension = originalName.split('.').pop().toLowerCase();
+    return `${timestamp}_${randomString}.${extension}`;
+  }
+  
+  async _storeAttachment(fileData, filename, mimeType) {
+    // Implémentation du stockage sécurisé des fichiers
+    // Ceci est un exemple simplifié - intégrez ici votre service de stockage préféré
+    return {
+      url: `/uploads/${filename}`,
+      thumbnailUrl: mimeType.startsWith('image/') ? `/thumbnails/${filename}` : null
+    };
+  }
+  
+  async _notifyRecipient(recipientId, notificationData) {
+    // Enregistrement de la notification en base
+    await this.db.notifications.create({
+      userId: recipientId,
+      ...notificationData,
+      read: false
+    });
+    
+    // Incrémenter le compteur de notifications non lues
+    await this.db.users.updateOne(
+      { _id: recipientId },
+      { $inc: { 'notifications.unreadMessages': 1 } }
+    );
+    
+    // Envoi via WebSocket si l'utilisateur est connecté
+    const wsConnection = global.connectedUsers.get(recipientId);
+    if (wsConnection) {
+      wsConnection.send(JSON.stringify({
+        type: 'notification',
+        data: notificationData
+      }));
+    }
+  }
+  
+  async _logAudit(action, details) {
+    await this.db.auditLogs.create({
+      action,
+      details,
+      timestamp: new Date(),
+      module: 'messaging'
+    });
+  }
+}
+
+// ============== SUPPORT MULTILINGUE ==============
+class MultilingualSupport {
+  constructor(database) {
+    this.db = database;
+    this.cache = new LanguageCache();
+    this.translator = new TranslationService();
+  }
+  
+  /**
+   * Charge les traductions pour une langue spécifique
+   * @param {string} languageCode - Code de la langue (fr, en, etc.)
+   * @returns {Promise<Object>} - Dictionnaire de traductions
+   */
+  async loadTranslations(languageCode) {
+    try {
+      // Vérification que la langue est supportée
+      if (!CONFIG.languages.includes(languageCode)) {
+        throw new ValidationError(`La langue ${languageCode} n'est pas supportée`);
+      }
+      
+      // Tentative de récupération depuis le cache
+      const cachedTranslations = this.cache.get(languageCode);
+      if (cachedTranslations) {
+        return cachedTranslations;
+      }
+      
+      // Récupération depuis la base de données
+      const translations = await this.db.translations.findOne({ languageCode });
+      
+      if (!translations || !translations.data) {
+        // Fallback sur la langue par défaut (français)
+        if (languageCode !== 'fr') {
+          console.warn(`Traductions pour ${languageCode} non trouvées, utilisation du français par défaut`);
+          return this.loadTranslations('fr');
+        }
+        throw new DataError('TRANSLATIONS_NOT_FOUND', 'Dictionnaire de traductions introuvable');
+      }
+      
+      // Mise en cache
+      this.cache.set(languageCode, translations.data);
+      
+      return translations.data;
+    } catch (error) {
+      console.error(`Erreur lors du chargement des traductions ${languageCode}:`, error);
+      throw new TranslationError('LOAD_TRANSLATIONS_FAILED', error.message);
+    }
+  }
+  
+  /**
+   * Traduit un texte dans une langue cible
+   * @param {string} text - Texte à traduire
+   * @param {string} targetLanguage - Langue cible
+   * @param {string} sourceLanguage - Langue source (détection auto si non spécifiée)
+   * @returns {Promise<string>} - Texte traduit
+   */
+  async translateText(text, targetLanguage, sourceLanguage = null) {
+    try {
+      // Validation des entrées
+      if (!text || !targetLanguage) {
+        throw new ValidationError('Le texte et la langue cible sont requis');
+      }
+      
+      // Vérification que la langue cible est supportée
+      if (!CONFIG.languages.includes(targetLanguage)) {
+        throw new ValidationError(`La langue ${targetLanguage} n'est pas supportée`);
+      }
+      
+      // Si les langues source et cible sont identiques, retourner le texte tel quel
+      if (sourceLanguage && sourceLanguage === targetLanguage) {
+        return text;
+      }
+      
+      // Utilisation du service de traduction
+      const translatedText = await this.translator.translate(text, targetLanguage, sourceLanguage);
+      
+      // Journalisation pour l'amélioration continue
+      await this._logTranslation(sourceLanguage || 'auto', targetLanguage, text.length);
+      
+      return translatedText;
+    } catch (error) {
+      console.error('Erreur lors de la traduction:', error);
+      throw new TranslationError('TRANSLATION_FAILED', error.message);
+    }
+  }
+  
+  /**
+   * Définit la langue préférée d'un utilisateur
+   * @param {string} userId - ID de l'utilisateur
+   * @param {string} languageCode - Code de la langue
+   * @returns {Promise<boolean>} - Succès de l'opération
+   */
+  async setUserLanguage(userId, languageCode) {
+    try {
+      // Validation de la langue
+      if (!CONFIG.languages.includes(languageCode)) {
+        throw new ValidationError(`La langue ${languageCode} n'est pas supportée`);
+      }
+      
+      // Mise à jour de la préférence utilisateur
+      await this.db.users.updateOne(
+        { _id: userId },
+        { $set: { preferredLanguage: languageCode } }
+      );
+      
+      return true;
+    } catch (error) {
+      console.error('Erreur lors de la définition de la langue utilisateur:', error);
+      throw new UserError('SET_LANGUAGE_FAILED', error.message);
+    }
+  }
+  
+  /**
+   * Récupère les langues disponibles avec leurs métadonnées
+   * @returns {Promise<Array>} - Liste des langues disponibles
+   */
+  async getAvailableLanguages() {
+    try {
+      const languages = await this.db.languages.find({
+        code: { $in: CONFIG.languages },
+        active: true
+      }).select('code name nativeName supportLevel').lean();
+      
+      return languages.map(lang => ({
+        ...lang,
+        isComplete: lang.supportLevel === 'complete'
+      }));
+    } catch (error) {
+      console.error('Erreur lors de la récupération des langues:', error);
+      throw new DataError('FETCH_LANGUAGES_FAILED', error.message);
+    }
+  }
+  
+  // Méthodes privées
+  
+  async _logTranslation(sourceLanguage, targetLanguage, charCount) {
+    await this.db.translationStats.updateOne(
+      { 
+        sourceLanguage, 
+        targetLanguage,
+        date: new Date().toISOString().split('T')[0]
+      },
+      { 
+        $inc: { 
+          count: 1,
+          charCount
+        } 
+      },
+      { upsert: true }
+    );
+  }
+}
+
+// Classe pour mise en cache des traductions
+class LanguageCache {
+  constructor(maxSize = 10) {
+    this.cache = new Map();
+    this.maxSize = maxSize;
+  }
+  
+  get(key) {
+    if (!this.cache.has(key)) return null;
+    
+    // Mettre à jour pour politique LRU (Least Recently Used)
+    const value = this.cache.get(key);
+    this.cache.delete(key);
+    this.cache.set(key, value);
+    
+    return value;
+  }
+  
+  set(key, value) {
+    // Si le cache est plein, supprimer l'élément le plus ancien
+    if (this.cache.size >= this.maxSize) {
+      const oldestKey = this.cache.keys().next().value;
+      this.cache.delete(oldestKey);
+    }
+    
+    this.cache.set(key, value);
+  }
+  
+  clear() {
+    this.cache.clear();
+  }
+}
+
+// Service de traduction
+class TranslationService {
+  constructor() {
+    // Initialisez ici votre service de traduction préféré
+    // ex: Google Translate, DeepL, Azure Translator, etc.
+  }
+  
+  async translate(text, targetLanguage, sourceLanguage = null) {
+    // Implémentation du service de traduction
+    // Ceci est un exemple simplifié - intégrez ici votre API de traduction
+    
+    // Simulation d'une API de traduction
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        // Simulation simplifiée 
+        resolve(`[Translated to ${targetLanguage}] ${text}`);
+      }, 100);
+    });
+  }
+}
+
+// ============== CHATBOT D'ASSISTANCE ==============
+class AssistanceChatbot {
+  constructor(database, multilingualService) {
+    this.db = database;
+    this.multilingual = multilingualService;
+    this.nlpProcessor = new NLPProcessor();
+    this.knowledgeBase = new KnowledgeBase();
+  }
+  
+  /**
+   * Traite une requête utilisateur et renvoie une réponse intelligente
+   * @param {Object} requestData - Données de la requête
+   * @returns {Promise<Object>} - Réponse du chatbot
+   */
+  async processRequest(requestData) {
+    try {
+      // Validation des entrées
+      this._validateRequestData(requestData);
+      
+      const { userId, message, language = CONFIG.chatbot.defaultLanguage, sessionId } = requestData;
+      
+      // Gestion du contexte de la conversation
+      const conversationContext = await this._getConversationContext(sessionId, userId);
+      
+      // Analyse et compréhension de la demande
+      const processedRequest = await this.nlpProcessor.processText(message, language);
+      
+      // Recherche de la réponse la plus pertinente
+      let response;
+      
+      // Si l'intention est claire, utiliser le gestionnaire spécifique
+      if (processedRequest.intent && processedRequest.confidence > 0.7) {
+        response = await this._handleIntent(processedRequest.intent, processedRequest.entities, conversationContext);
+      } else {
+        // Sinon, recherche sémantique dans la base de connaissances
+        response = await this.knowledgeBase.findBestMatch(message, language);
+      }
+      
+      // Enrichissement de la réponse
+      const enrichedResponse = await this._enrichResponse(response, conversationContext, processedRequest);
+      
+      // Traduction si nécessaire
+      let finalResponse = enrichedResponse;
+      if (language !== enrichedResponse.language) {
+        finalResponse.content = await this.multilingual.translateText(
+          enrichedResponse.content,
+          language,
+          enrichedResponse.language
+        );
+        finalResponse.language = language;
+      }
+      
+      // Mise à jour du contexte de conversation
+      await this._updateConversationContext(sessionId, userId, message, finalResponse.content);
+      
+      // Collecte de statistiques pour l'amélioration continue
+      await this._logInteraction(userId, processedRequest, finalResponse, sessionId);
+      
+      return {
+        message: finalResponse.content,
+        suggestions: finalResponse.suggestions || [],
+        language: finalResponse.language,
+        sessionId
+      };
+    } catch (error) {
+      console.error('Erreur lors du traitement de la requête chatbot:', error);
+      
+      // Réponse de secours en cas d'erreur
+      const fallbackResponse = {
+        message: this._getFallbackMessage(requestData.language || CONFIG.chatbot.defaultLanguage),
+        suggestions: ['help', 'contact_support'],
+        error: error.message
+      };
+      
+      // Journalisation de l'erreur
+      await this._logError(requestData, error);
+      
+      return fallbackResponse;
+    }
+  }
+  
+  /**
+   * Récupère la liste des sujets fréquemment demandés
+   * @param {string} language - Code de la langue
+   * @returns {Promise<Array>} - Sujets fréquents
+   */
+  async getFrequentTopics(language = CONFIG.chatbot.defaultLanguage) {
+    try {
+      // Récupération des sujets les plus populaires
+      const popularTopics = await this.db.chatbotStats.aggregate([
+        { $match: { type: 'topic_access' } },
+        { $group: { _id: '$topicId', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 }
+      ]);
+      
+      // Récupération des détails complets
+      const topicIds = popularTopics.map(t => t._id);
+      const topics = await this.db.chatbotTopics.find({
+        _id: { $in: topicIds },
+        languages: language
+      }).select('name icon description languages').lean();
+      
+      // Traduction si nécessaire
+      return Promise.all(topics.map(async topic => {
+        if (!topic.translations || !topic.translations[language]) {
+          // Traduire à la volée si la traduction n'est pas disponible
+          if (topic.translations && topic.translations.fr) {
+            return {
+              ...topic,
+              name: await this.multilingual.translateText(topic.translations.fr.name, language, 'fr'),
+              description: await this.multilingual.translateText(topic.translations.fr.description, language, 'fr')
+            };
+          }
+          return topic;
+        }
+        
+        return {
+          ...topic,
+          name: topic.translations[language].name,
+          description: topic.translations[language].description
+        };
+      }));
+    } catch (error) {
+      console.error('Erreur lors de la récupération des sujets fréquents:', error);
+      return [];
+    }
+  }
+  
+  /**
+   * Fournit une assistance contextuelle sur une page spécifique
+   * @param {string} pageIdentifier - Identifiant de la page
+   * @param {string} language - Code de la langue
+   * @returns {Promise<Object>} - Informations d'assistance pour cette page
+   */
+  async getContextualHelp(pageIdentifier, language = CONFIG.chatbot.defaultLanguage) {
+    try {
+      // Recherche de l'aide contextuelle pour cette page
+      const contextualHelp = await this.db.contextualHelp.findOne({
+        pageIdentifier,
+        active: true
+      }).lean();
+      
+      if (!contextualHelp) {
+        return null;
+      }
+      
+      // Traduction si nécessaire
+      let helpContent = contextualHelp.content;
+      let helpTitle = contextualHelp.title;
+      
+      if (contextualHelp.language !== language) {
+        helpContent = await this.multilingual.translateText(helpContent, language, contextualHelp.language);
+        helpTitle = await this.multilingual.translateText(helpTitle, language, contextualHelp.language);
+      }
+      
+      // Récupération des questions fréquentes associées
+      const faqs = await this.db.faqs.find({
+        pageIdentifiers: pageIdentifier,
+        active: true
+      }).limit(5).lean();
+      
+      // Traduction des FAQs si nécessaire
+      const translatedFaqs = await Promise.all(faqs.map(async faq => {
+        if (faq.language !== language) {
+          return {
+            ...faq,
+            question: await this.multilingual.translateText(faq.question, language, faq.language),
+            answer: await this.multilingual.translateText(faq.answer, language, faq.language)
+          };
+        }
+        return faq;
+      }));
+      
+      // Journalisation pour l'amélioration continue
+      await this._logContextualHelpAccess(pageIdentifier, language);
+      
+      return {
+        title: helpTitle,
+        content: helpContent,
+        faqs: translatedFaqs,
+        suggestions: contextualHelp.suggestions || []
+      };
+    } catch (error) {
+      console.error('Erreur lors de la récupération de l\'aide contextuelle:', error);
+      return null;
+    }
+  }
+  
+  // Méthodes privées
+  
+  _validateRequestData(requestData) {
+    if (!requestData.message) {
+      throw new ValidationError('Le message est requis');
+    }
+    
+    if (!requestData.userId) {
+      throw new ValidationError('L\'identifiant utilisateur est requis');
+    }
+    
+    if (requestData.language && !CONFIG.languages.includes(requestData.language)) {
+      throw new ValidationError(`La langue ${requestData.language} n'est pas supportée`);
+    }
+  }
+  
+  async _getConversationContext(sessionId, userId) {
+    // Si pas de session spécifiée, en créer une nouvelle
+    if (!sessionId) {
+      const newSession = await this.db.chatbotSessions.create({
+        userId,
+        startedAt: new Date(),
+        lastInteractionAt: new Date()
+      });
+      
+      return {
+        sessionId: newSession._id.toString(),
+        messages: [],
+        userProfile: await this._getUserProfile(userId)
+      };
+    }
+    
+    // Récupérer la session existante
+    const session = await this.db.chatbotSessions.findOne({
+      _id: sessionId,
+      userId
+    });
+    
+    if (!session) {
+      // La session n'existe pas ou n'appartient pas à cet utilisateur
+      throw new AccessError('SESSION_NOT_FOUND', 'Session de conversation non trouvée');
+    }
+    
+    // Récupérer les messages récents
+    const recentMessages = await this.db.chatbotMessages.find({
+      sessionId
+    })
+    .sort({ createdAt: -1 })
+    .limit(CONFIG.chatbot.contextRetentionMessages)
+    .lean();
+    
+    return {
+      sessionId,
+      messages: recentMessages.reverse(),
+      userProfile: await this._getUserProfile(userId)
+    };
+  }
+  
+  async _getUserProfile(userId) {
+    const user = await this.db.users.findOne({ _id: userId })
+      .select('preferredLanguage roles studentInfo internationalExperience')
+      .lean();
+      
+    if (!user) {
+      return { preferredLanguage: CONFIG.chatbot.defaultLanguage };
+    }
+    
+    return user;
+  }
+  
+  async _handleIntent(intent, entities, context) {
+    // Gestionnaire d'intentions spécifiques
+    switch (intent) {
+      case 'get_application_status':
+        return this._handleApplicationStatusIntent(entities, context);
+      
+      case 'document_requirements':
+        return this._handleDocumentRequirementsIntent(entities, context);
+      
+      case 'deadline_information':
+        return this._handleDeadlineIntent(entities, context);
+      
+      case 'contact_advisor':
+        return this._handleContactAdvisorIntent(entities, context);
+      
+      case 'language_settings':
+        return this._handleLanguageSettingsIntent(entities, context);
+        
+      default:
+        // Intention non reconnue explicitement, passer à la recherche sémantique
+        return null;
+    }
+  }
+  
+  async _handleApplicationStatusIntent(entities, context) {
+    // Récupération du statut de la demande pour l'étudiant connecté
+    if (!context.userProfile || !context.userProfile.studentInfo) {
+      return {
+        content: "Je ne trouve pas vos informations d'étudiant. Veuillez vous connecter avec votre compte étudiant pour accéder à cette information.",
+        language: context.userProfile?.preferredLanguage || CONFIG.chatbot.defaultLanguage,
+        suggestions: ['login', 'create_account', 'contact_support']
+      };
+    }
+    
+    // Récupération de la demande la plus récente
+    const application = await this.db.applications.findOne({
+      studentId: context.userProfile.studentInfo.id,
+      status: { $ne: 'draft' }
+    }).sort({ updatedAt: -1 }).lean();
+    
+    if (!application) {
+      return {
+        content: "Vous n'avez pas encore soumis de demande. Souhaitez-vous commencer une nouvelle demande maintenant ?",
+        language: context.userProfile.preferredLanguage,
+        suggestions: ['start_new_application', 'application_requirements', 'deadlines']
+      };
+    }
+    
+    // Formatage de la date
+    const lastUpdate = new Date(application.updatedAt);
+    const formattedDate = lastUpdate.toLocaleDateString(context.userProfile.preferredLanguage, {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric'
+    });
+    
+    // Construction d'une réponse personnalisée selon le statut
+    let statusMessage;
+    let suggestions = [];
+    
+    switch (application.status) {
+      case 'submitted':
+        statusMessage = `Votre demande a été soumise le ${formattedDate} et est en cours d'examen. Le délai habituel de traitement est de 2 à 3 semaines.`;
+        suggestions = ['estimated_processing_time', 'check_documents', 'contact_advisor'];
+        break;
+      case 'incomplete':
+        statusMessage = `Votre demande du ${formattedDate} est incomplète. Veuillez fournir les documents manquants: ${application.missingDocuments.join(', ')}.`;
+        suggestions = ['upload_documents', 'document_requirements', 'extend_deadline'];
+        break;
+      case 'approved':
+        statusMessage = `Félicitations ! Votre demande a été approuvée le ${formattedDate}. Veuillez consulter les prochaines étapes dans votre espace étudiant.`;
+        suggestions = ['next_steps', 'pre_departure_checklist', 'contact_host_university'];
+        break;
+      case 'rejected':
+        statusMessage = `Nous sommes désolés, votre demande du ${formattedDate} n'a pas été retenue. Vous pouvez contacter un conseiller pour discuter des alternatives possibles.`;
+        suggestions = ['reapplication_process', 'alternative_programs', 'schedule_advisor_meeting'];
+        break;
+      default:
+        statusMessage = `Votre demande est actuellement en statut "${application.status}". La dernière mise à jour date du ${formattedDate}.`;
+        suggestions = ['application_details', 'contact_advisor'];
+    }
+    
+    return {
+      content: statusMessage,
+      language: context.userProfile.preferredLanguage,
+      suggestions
+    };
+  }
+  
+  async _handleDocumentRequirementsIntent(entities, context) {
+    // Déterminer le programme ou le pays si mentionné dans les entités
+    let program = null;
+    let country = null;
+    
+    if (entities) {
+      program = entities.find(e => e.type === 'program')?.value;
+      country = entities.find(e => e.type === 'country')?.value;
+    }
+    
+    // Si l'étudiant est connecté et a une demande en cours, utiliser ces informations
+    if (context.userProfile?.studentInfo) {
+      const application = await this.db.applications.findOne({
+        studentId: context.userProfile.studentInfo.id,
+        status: { $in: ['draft', 'submitted', 'incomplete'] }
+      }).sort({ updatedAt: -1 }).lean();
+      
+      if (application && !program) {
+        program = application.programId;
+      }
+      
+      if (application && !country) {
+        country = application.countryId;
+      }
+    }
+    
+    // Récupération des exigences documentaires
+    let requirements;
+    
+    if (program) {
+      // Exigences spécifiques au programme
+      requirements = await this.db.documentRequirements.findOne({ programId: program }).lean();
+    } else if (country) {
+      // Exigences spécifiques au pays
+      requirements = await this.db.documentRequirements.findOne({ countryId: country }).lean();
+    } else {
+      // Exigences générales
+      requirements = await this.db.documentRequirements.findOne({ isDefault: true }).lean();
+    }
+    
+    if (!requirements) {
+      return {
+        content: "Je n'ai pas trouvé d'exigences documentaires spécifiques. Veuillez préciser le programme ou le pays pour lequel vous souhaitez des informations.",
+        language: context.userProfile?.preferredLanguage || CONFIG.chatbot.defaultLanguage,
+        suggestions: ['list_programs', 'list_countries', 'general_requirements']
+      };
+    }
+    
+    // Construction de la réponse
+    let responseContent = `Voici les documents requis${program ? ` pour le programme ${requirements.programName}` : ''}${country ? ` pour ${requirements.countryName}` : ''} :\n\n`;
+    
+    requirements.documents.forEach((doc, index) => {
+      responseContent += `${index + 1}. **${doc.name}** - ${doc.description}\n`;
+      if (doc.deadlineInfo) {
+        responseContent += `   *Délai: ${doc.deadlineInfo}*\n`;
+      }
+    });
+    
+    responseContent += "\n\nTous les documents doivent être fournis en format PDF ou JPEG, et ne pas dépasser 5 MB par fichier.";
+    
+    return {
+      content: responseContent,
+      language: requirements.language,
+      suggestions: ['upload_documents', 'document_templates', 'translation_services']
+    };
+  }
+  
+  async _handleDeadlineIntent(entities, context) {
+    // Logique similaire à _handleDocumentRequirementsIntent
+    // Récupération des informations sur les délais pour un programme/pays spécifique
+    
+    // Exemple simplifié
+    return {
+      content: "Les délais de candidature varient selon le programme et le pays de destination. Pour les programmes d'automne, la date limite est généralement fixée au 15 mars. Pour les programmes de printemps, c'est habituellement le 15 octobre.",
+      language: context.userProfile?.preferredLanguage || CONFIG.chatbot.defaultLanguage,
+      suggestions: ['specific_program_deadlines', 'application_calendar', 'late_submission_policy']
+    };
+  }
+  
+  async _handleContactAdvisorIntent(entities, context) {
+    // Récupérer les conseillers disponibles pour l'étudiant
+    let advisors = [];
+    
+    if (context.userProfile?.studentInfo) {
+      // Récupération du conseiller attitré si l'étudiant en a un
+      const assignedAdvisor = await this.db.advisors.findOne({
+        assignedStudents: context.userProfile.studentInfo.id,
+        status: 'active'
+      }).lean();
+      
+      if (assignedAdvisor) {
+        advisors.push(assignedAdvisor);
+      }
+    }
+    
+    // Si pas de conseiller spécifique, récupérer les conseillers disponibles
+    if (advisors.length === 0) {
+      advisors = await this.db.advisors.find({
+        status: 'active',
+        availableForNewStudents: true
+      }).limit(3).lean();
+    }
+    
+    if (advisors.length === 0) {
+      return {
+        content: "Nous n'avons pas trouvé de conseillers disponibles pour le moment. Veuillez contacter notre service d'assistance à support@dei-studybloom.fr",
+        language: context.userProfile?.preferredLanguage || CONFIG.chatbot.defaultLanguage,
+        suggestions: ['email_support', 'call_support', 'check_faq']
+      };
+    }
+    
+    // Construction de la réponse
+    let responseContent = advisors.length === 1 
+      ? "Voici les coordonnées de votre conseiller :\n\n" 
+      : "Voici les conseillers disponibles :\n\n";
+    
+    advisors.forEach(advisor => {
+      responseContent += `**${advisor.firstName} ${advisor.lastName}**\n`;
+      responseContent += `Email: ${advisor.email}\n`;
+      
+      if (advisor.phoneNumber) {
+        responseContent += `Téléphone: ${advisor.phoneNumber}\n`;
+      }
+      
+      if (advisor.availability) {
+        responseContent += `Disponibilité: ${advisor.availability}\n`;
+      }
+      
+      responseContent += `Spécialisation: ${advisor.specialization.join(', ')}\n\n`;
+    });
+    
+    responseContent += "Souhaitez-vous programmer un rendez-vous avec un conseiller ?";
+    
+    return {
+      content: responseContent,
+      language: context.userProfile?.preferredLanguage || CONFIG.chatbot.defaultLanguage,
+      suggestions: ['schedule_appointment', 'send_email_to_advisor', 'check_advisor_calendar']
+    };
+  }
+  
+  async _handleLanguageSettingsIntent(entities, context) {
+    // Changer la langue ou donner des informations sur les langues disponibles
+    let targetLanguage = null;
+    
+    if (entities) {
+      targetLanguage = entities.find(e => e.type === 'language')?.value;
+    }
+    
+    if (targetLanguage && CONFIG.languages.includes(targetLanguage)) {
+      // Si l'utilisateur est connecté, enregistrer sa préférence
+      if (context.userProfile && context.userProfile._id) {
+        await this.multilingual.setUserLanguage(context.userProfile._id, targetLanguage);
+      }
+      
+      const languageNames = {
+        fr: 'français',
+        en: 'anglais',
+        es: 'espagnol',
+        de: 'allemand',
+        zh: 'chinois',
+        ar: 'arabe',
+        ru: 'russe',
+        pt: 'portugais',
+        ja: 'japonais',
+        ko: 'coréen'
+      };
+      
+      return {
+        content: `La langue a été changée pour le ${languageNames[targetLanguage] || targetLanguage}. Tous les messages suivants seront dans cette langue.`,
+        language: targetLanguage,
+        suggestions: ['help', 'main_menu', 'language_settings']
+      };
+    }
+    
+    // Si pas de langue spécifiée ou langue non reconnue, afficher les options
+    const availableLanguages = await this.multilingual.getAvailableLanguages();
+    let responseContent = "Voici les langues disponibles :\n\n";
+    
+    availableLanguages.forEach(lang => {
+      responseContent += `- ${lang.name} (${lang.nativeName})\n`;
+    });
+    
+    responseContent += "\nPour changer de langue, dites simplement \"Changer la langue pour [langue souhaitée]\" ou cliquez sur l'une des suggestions ci-dessous.";
+    
+    const languageSuggestions = availableLanguages
+      .slice(0, 5)
+      .map(lang => `switch_to_${lang.code}`);
+    
+    return {
+      content: responseContent,
+      language: context.userProfile?.preferredLanguage || CONFIG.chatbot.defaultLanguage,
+      suggestions: languageSuggestions
+    };
+  }
+  
+  async _enrichResponse(response, context, processedRequest) {
+    // Si aucune réponse n'a été trouvée
+    if (!response) {
+      // Vérifier si la demande peut être transmise à un humain
+      if (this._shouldEscalateToHuman(processedRequest)) {
+        return {
+          content: "Je ne suis pas en mesure de répondre à cette question. Souhaitez-vous être mis en contact avec un conseiller humain ?",
+          language: context.userProfile?.preferredLanguage || CONFIG.chatbot.defaultLanguage,
+          suggestions: ['contact_human_advisor', 'rephrase_question', 'browse_faq']
+        };
+      }
+      
+      // Réponse par défaut
+      return {
+        content: "Je ne comprends pas complètement votre demande. Pourriez-vous reformuler ou choisir l'un des sujets populaires ci-dessous ?",
+        language: context.userProfile?.preferredLanguage || CONFIG.chatbot.defaultLanguage,
+        suggestions: ['application_status', 'document_requirements', 'deadlines', 'contact_advisor']
+      };
+    }
+    
+    // Personnalisation de la réponse avec le contexte utilisateur si possible
+    if (context.userProfile && context.userProfile.studentInfo) {
+      // Exemple de personnalisation basée sur le profil étudiant
+      if (response.content.includes('{{studentName}}')) {
+        response.content = response.content.replace('{{studentName}}', context.userProfile.studentInfo.name);
+      }
+      
+      if (response.content.includes('{{universityName}}')) {
+        response.content = response.content.replace('{{universityName}}', context.userProfile.studentInfo.universityName || 'votre université');
+      }
+    }
+    
+    return response;
+  }
+  
+  _shouldEscalateToHuman(processedRequest) {
+    // Détecter si la demande nécessite une intervention humaine
+    // Par exemple, sentiment très négatif, sujet complexe, demande explicite, etc.
+    return processedRequest.sentiment === 'very_negative' || 
+           processedRequest.complexity > 0.8 || 
+           processedRequest.intent === 'request_human';
+  }
+  
+  async _updateConversationContext(sessionId, userId, userMessage, botResponse) {
+    if (!sessionId) return;
+    
+    // Mettre à jour la session
+    await this.db.chatbotSessions.updateOne(
+      { _id: sessionId },
+      { $set: { lastInteractionAt: new Date() } }
+    );
+    
+    // Enregistrer les messages
+    await this.db.chatbotMessages.insertMany([
+      {
+        sessionId,
+        userId,
+        content: userMessage,
+        type: 'user',
+        createdAt: new Date()
+      },
+      {
+        sessionId,
+        content: botResponse,
+        type: 'bot',
+        createdAt: new Date()
+      }
+    ]);
+  }
+  
+  async _logInteraction(userId, processedRequest, response, sessionId) {
+    await this.db.chatbotStats.create({
+      userId,
+      sessionId,
+      intent: processedRequest.intent || 'unknown',
+      confidence: processedRequest.confidence,
+      sentiment: processedRequest.sentiment,
+      responseTime: new Date() - processedRequest.startTime,
+      successful: !response.error,
+      timestamp: new Date()
+    });
+  }
+  
+  async _logError(requestData, error) {
+    await this.db.errors.create({
+      module: 'chatbot',
+      userId: requestData.userId,
+      sessionId: requestData.sessionId,
+      input: requestData.message,
+      error: {
+        message: error.message,
+        stack: error.stack,
+        type: error.name
+      },
+      timestamp: new Date()
+    });
+  }
+  
+  async _logContextualHelpAccess(pageIdentifier, language) {
+    await this.db.chatbotStats.updateOne(
+      { 
+        type: 'contextual_help_access',
+        pageIdentifier,
+        date: new Date().toISOString().split('T')[0],
+        language
+      },
+      { $inc: { count: 1 } },
+      { upsert: true }
+    );
+  }
+  
+  _getFallbackMessage(language) {
+    const fallbackMessages = {
+      fr: "Je suis désolé, une erreur s'est produite lors du traitement de votre demande. Comment puis-je vous aider autrement ?",
+      en: "I'm sorry, an error occurred while processing your request. How can I help you with something else?",
+      es: "Lo siento, se produjo un error al procesar su solicitud. ¿Cómo puedo ayudarlo con otra cosa?",
+      de: "Es tut mir leid, bei der Verarbeitung Ihrer Anfrage ist ein Fehler aufgetreten. Wie kann ich Ihnen mit etwas anderem helfen?",
+      // Autres langues...
+    };
+    
+    return fallbackMessages[language] || fallbackMessages.fr;
+  }
+}
+
+// Processeur de langage naturel
+class NLPProcessor {
+  constructor() {
+    // Initialisation du traitement NLP
+    // Ici vous intégreriez votre service NLP préféré
+  }
+  
+  async processText(text, language) {
+    // Marquer le début du traitement pour mesurer la performance
+    const startTime = new Date();
+    
+    // Simulation d'analyse NLP
+    // Dans une implémentation réelle, vous utiliseriez un service comme
+    // DialogFlow, LUIS, Wit.ai, Rasa, etc.
+    
+    // Exemple simplifié d'analyse
+    let intent = null;
+    let confidence = 0;
+    let entities = [];
+    let sentiment = 'neutral';
+    let complexity = 0.5;
+    
+    // Analyse d'intention simplifiée basée sur des mots-clés
+    if (text.match(/statut|état|avancement|progrès|dossier/i)) {
+      intent = 'get_application_status';
+      confidence = 0.85;
+    } else if (text.match(/document|papier|certificat|diplôme|relevé/i)) {
+      intent = 'document_requirements';
+      confidence = 0.8;
+      
+      // Extraction d'entités simplifiée
+      const countryMatch = text.match(/pour (le |la |l')?([A-Za-z]+)/i);
+      if (countryMatch && countryMatch[2]) {
+        entities.push({
+          type: 'country',
+          value: countryMatch[2].toLowerCase(),
+          confidence: 0.7
+        });
+      }
+    } else if (text.match(/délai|date limite|deadline|échéance/i)) {
+      intent = 'deadline_information';
+      confidence = 0.9;
+    } else if (text.match(/conseiller|advisor|contact|parler|humain/i)) {
+      intent = 'contact_advisor';
+      confidence = 0.85;
+    } else if (text.match(/langue|language|traduire|translation|idioma/i)) {
+      intent = 'language_settings';
+      confidence = 0.8;
+      
+      // Extraction de la langue demandée
+      const languageMatch = text.match(/français|anglais|espagnol|allemand|chinois|arabe|russe|portugais|japonais|coréen/i);
+      if (languageMatch) {
+        const languageMap = {
+          'français': 'fr',
+          'anglais': 'en',
+          'espagnol': 'es',
+          'allemand': 'de',
+          'chinois': 'zh',
+          'arabe': 'ar',
+          'russe': 'ru',
+          'portugais': 'pt',
+          'japonais': 'ja',
+          'coréen': 'ko'
+        };
+        
+        entities.push({
+          type: 'language',
+          value: languageMap[languageMatch[0].toLowerCase()],
+          confidence: 0.9
+        });
+      }
+    }
+    
+    // Analyse de sentiment simplifiée
+    if (text.match(/merci|super|excellent|parfait|génial/i)) {
+      sentiment = 'positive';
+    } else if (text.match(/mauvais|nul|problème|difficile|impossible/i)) {
+      sentiment = 'negative';
+    } else if (text.match(/horrible|catastrophe|inacceptable|furieux|colère/i)) {
+      sentiment = 'very_negative';
+    }
+    
+    // Analyse de complexité simplifiée
+    complexity = Math.min(1, text.length / 200);
+    
+    // Résultat du traitement
+    return {
+      intent,
+      confidence,
+      entities,
+      sentiment,
+      complexity,
+      language,
+      startTime
+    };
+  }
+}
+
+// Base de connaissances
+class KnowledgeBase {
+  constructor() {
+    // Initialisation de la base de connaissances
+    this.db = null; // Sera injecté lors de l'initialisation
+  }
+  
+  async findBestMatch(query, language) {
+    // Dans une implémentation réelle, vous utiliseriez une recherche sémantique
+    // avec un système comme Elasticsearch, Pinecone, etc.
+    
+    // Exemple simplifié
+    const results = await this.db.knowledgeBase.aggregate([
+      {
+        $match: {
+          language,
+          active: true
+        }
+      },
+      {
+        $addFields: {
+          // Calcul simplifié de la pertinence
+          // Dans un cas réel, utilisez une fonction de similarité vectorielle
+          relevance: {
+            $cond: {
+              if: { $regexMatch: { input: "$keywords", regex: query, options: "i" } },
+              then: 0.9,
+              else: {
+                $cond: {
+                  if: { $regexMatch: { input: "$content", regex: query, options: "i" } },
+                  then: 0.7,
+                  else: 0.1
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        $match: {
+          relevance: { $gt: 0.5 }
+        }
+      },
+      {
+        $sort: { relevance: -1 }
+      },
+      {
+        $limit: 1
+      }
+    ]);
+    
+    if (results.length === 0) {
+      return null;
+    }
+    
+    return {
+      content: results[0].content,
+      language: results[0].language,
+      suggestions: results[0].suggestions || []
+    };
+  }
+}
+
+// ============== CLASSES D'ERREUR ==============
+class MessageError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'MessageError';
+    this.code = code;
+  }
+}
+
+class ValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}
+
+class AccessError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'AccessError';
+    this.code = code;
+  }
+}
+
+class DataError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'DataError';
+    this.code = code;
+  }
+}
+
+class TranslationError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'TranslationError';
+    this.code = code;
+  }
+}
+
+class SecurityError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'SecurityError';
+    this.code = code;
+  }
+}
+
+class UserError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'UserError';
+    this.code = code;
+  }
+}
+
+// ============== SERVICE DE CHIFFREMENT ==============
+class EncryptionService {
+  constructor() {
+    // Initialisation du service de chiffrement
+    // Dans une implémentation réelle, vous utiliseriez une bibliothèque comme crypto-js
+    this.algorithm = 'AES-GCM';
+    this.keyLength = 256;
+    this.ivLength = 12;
+  }
+  
+  async encrypt(plaintext) {
+    // Simulation d'un chiffrement
+    // Dans une implémentation réelle, vous utiliseriez:
+    // 1. Génération d'une IV aléatoire
+    // 2. Chiffrement du texte avec la clé et l'IV
+    // 3. Concaténation de l'IV et du texte chiffré
+    // 4. Encodage en base64
+    
+    return `encrypted:${plaintext}`;
+  }
+  
+  async decrypt(ciphertext) {
+    // Simulation d'un déchiffrement
+    // Dans une implémentation réelle, vous feriez:
+    // 1. Décodage du base64
+    // 2. Extraction de l'IV
+    // 3. Déchiffrement avec la clé et l'IV
+    
+    if (ciphertext.startsWith('encrypted:')) {
+      return ciphertext.substring(10);
+    }
+    
+    return ciphertext;
+  }
+}
+
+// ============== INITIALISATION ET DÉMARRAGE ==============
+/**
+ * Initialise et connecte tous les modules d'outils de communication
+ * 
+ * @param {Object} database - Instance de la base de données connectée
+ * @param {Object} authService - Service d'authentification configuré
+ * @returns {Object} - Ensemble des services initialisés
+ */
+function initCommunicationTools(database, authService) {
+  // Vérification des prérequis
+  if (!database) {
+    throw new Error("La base de données est requise pour initialiser les outils de communication");
+  }
+  
+  if (!authService) {
+    throw new Error("Le service d'authentification est requis pour initialiser les outils de communication");
+  }
+  
+  console.log("Initialisation des outils de communication...");
+  
+  // Création des services
+  const messaging = new SecureMessaging(database, authService);
+  const multilingual = new MultilingualSupport(database);
+  const chatbot = new AssistanceChatbot(database, multilingual);
+  
+  // Injection des dépendances
+  chatbot.knowledgeBase.db = database;
+  
+  console.log("Outils de communication initialisés avec succès");
+  
+  // Retourne les services initialisés
+  return {
+    messaging,
+    multilingual,
+    chatbot
+  };
+}
+
+// ============== EXEMPLE D'UTILISATION ==============
+/**
+ * Exemple d'utilisation des outils de communication
+ * 
+ * @param {Object} commTools - Services de communication initialisés
+ */
+async function exampleUsage(commTools) {
+  try {
+    // Exemple de messagerie
+    const messageResult = await commTools.messaging.sendMessage({
+      senderId: "user123",
+      recipientId: "advisor456",
+      content: "Bonjour, j'ai une question concernant mon dossier.",
+      attachments: []
+    });
+    console.log("Message envoyé:", messageResult);
+    
+    // Exemple de traduction
+    const translatedText = await commTools.multilingual.translateText(
+      "Quels documents dois-je fournir pour mon dossier ?",
+      "en"
+    );
+    console.log("Texte traduit:", translatedText);
+    
+    // Exemple de chatbot
+    const chatbotResponse = await commTools.chatbot.processRequest({
+      userId: "user123",
+      message: "Quel est le statut de ma demande ?",
+      language: "fr"
+    });
+    console.log("Réponse du chatbot:", chatbotResponse);
+    
+  } catch (error) {
+    console.error("Erreur lors de l'exemple d'utilisation:", error);
+  }
+}
+
+// Export des classes et fonctions
+module.exports = {
+  SecureMessaging,
+  MultilingualSupport,
+  AssistanceChatbot,
+  initCommunicationTools,
+  CONFIG
+};
