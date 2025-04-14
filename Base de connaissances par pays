@@ -1,0 +1,2204 @@
+/**
+ * DEI-StudyBloom - Module Base de connaissances par pays
+ * 
+ * Ce script gère la base de connaissances internationale avec:
+ * - Fiches informatives par pays
+ * - Bibliothèque de modèles et templates
+ * - FAQ et guides
+ */
+
+// Structure de données pour la base de connaissances
+class KnowledgeBase {
+  constructor() {
+    this.countries = new Map();
+    this.templates = new Map();
+    this.faqs = new Map();
+    this.searchIndex = new SearchIndex();
+    this.lastUpdated = new Date();
+  }
+
+  /**
+   * Ajoute ou met à jour les informations d'un pays
+   * @param {string} countryCode - Code ISO du pays (ex: FR, UK, US)
+   * @param {Object} countryData - Données du pays
+   */
+  addCountry(countryCode, countryData) {
+    this.countries.set(countryCode.toUpperCase(), {
+      ...countryData,
+      lastUpdated: new Date()
+    });
+    
+    // Indexer le contenu pour la recherche
+    this.searchIndex.indexCountry(countryCode, countryData);
+    this.updateLastModified();
+    
+    return this;
+  }
+
+  /**
+   * Récupère les informations d'un pays
+   * @param {string} countryCode - Code ISO du pays
+   * @returns {Object|null} - Données du pays ou null si non trouvé
+   */
+  getCountry(countryCode) {
+    return this.countries.get(countryCode.toUpperCase()) || null;
+  }
+
+  /**
+   * Ajoute un template pour un type de document spécifique
+   * @param {string} templateId - Identifiant unique du template
+   * @param {Object} templateData - Données du template
+   */
+  addTemplate(templateId, templateData) {
+    this.templates.set(templateId, {
+      ...templateData,
+      lastUpdated: new Date()
+    });
+    
+    // Indexer le template pour la recherche
+    this.searchIndex.indexTemplate(templateId, templateData);
+    this.updateLastModified();
+    
+    return this;
+  }
+
+  /**
+   * Récupère un template par son ID
+   * @param {string} templateId - Identifiant du template
+   * @returns {Object|null} - Données du template ou null si non trouvé
+   */
+  getTemplate(templateId) {
+    return this.templates.get(templateId) || null;
+  }
+
+  /**
+   * Récupère les templates associés à un pays spécifique
+   * @param {string} countryCode - Code ISO du pays
+   * @returns {Array} - Liste des templates pour ce pays
+   */
+  getTemplatesByCountry(countryCode) {
+    const countryTemplates = [];
+    
+    this.templates.forEach((template, id) => {
+      if (template.countries && 
+          template.countries.includes(countryCode.toUpperCase())) {
+        countryTemplates.push({
+          id,
+          ...template
+        });
+      }
+    });
+    
+    return countryTemplates;
+  }
+
+  /**
+   * Ajoute une FAQ à la base de connaissances
+   * @param {string} faqId - Identifiant unique de la FAQ
+   * @param {Object} faqData - Données de la FAQ
+   */
+  addFAQ(faqId, faqData) {
+    this.faqs.set(faqId, {
+      ...faqData,
+      lastUpdated: new Date()
+    });
+    
+    // Indexer la FAQ pour la recherche
+    this.searchIndex.indexFAQ(faqId, faqData);
+    this.updateLastModified();
+    
+    return this;
+  }
+
+  /**
+   * Récupère une FAQ par son ID
+   * @param {string} faqId - Identifiant de la FAQ
+   * @returns {Object|null} - Données de la FAQ ou null si non trouvée
+   */
+  getFAQ(faqId) {
+    return this.faqs.get(faqId) || null;
+  }
+
+  /**
+   * Récupère les FAQs associées à un pays spécifique
+   * @param {string} countryCode - Code ISO du pays
+   * @returns {Array} - Liste des FAQs pour ce pays
+   */
+  getFAQsByCountry(countryCode) {
+    const countryFAQs = [];
+    
+    this.faqs.forEach((faq, id) => {
+      if (faq.countries && 
+          faq.countries.includes(countryCode.toUpperCase())) {
+        countryFAQs.push({
+          id,
+          ...faq
+        });
+      }
+    });
+    
+    return countryFAQs;
+  }
+
+  /**
+   * Recherche dans toute la base de connaissances
+   * @param {string} query - Terme de recherche
+   * @param {Object} options - Options de recherche (filtres, limite, etc.)
+   * @returns {Array} - Résultats de recherche triés par pertinence
+   */
+  search(query, options = {}) {
+    return this.searchIndex.search(query, options);
+  }
+
+  /**
+   * Recherche spécifique à un pays
+   * @param {string} countryCode - Code ISO du pays
+   * @param {string} query - Terme de recherche
+   * @returns {Array} - Résultats de recherche pour ce pays
+   */
+  searchByCountry(countryCode, query) {
+    return this.searchIndex.search(query, {
+      filter: { countryCode: countryCode.toUpperCase() }
+    });
+  }
+
+  /**
+   * Met à jour la date de dernière modification
+   */
+  updateLastModified() {
+    this.lastUpdated = new Date();
+  }
+
+  /**
+   * Exporte la base de connaissances au format JSON
+   * @returns {string} - Représentation JSON de la base
+   */
+  export() {
+    return JSON.stringify({
+      countries: Array.from(this.countries.entries()),
+      templates: Array.from(this.templates.entries()),
+      faqs: Array.from(this.faqs.entries()),
+      lastUpdated: this.lastUpdated
+    });
+  }
+
+  /**
+   * Importe une base de connaissances depuis JSON
+   * @param {string} jsonData - Données JSON à importer
+   * @returns {KnowledgeBase} - La base de connaissances mise à jour
+   */
+  import(jsonData) {
+    try {
+      const data = JSON.parse(jsonData);
+      
+      // Importer les pays
+      if (data.countries) {
+        data.countries.forEach(([code, country]) => {
+          this.countries.set(code, country);
+        });
+      }
+      
+      // Importer les templates
+      if (data.templates) {
+        data.templates.forEach(([id, template]) => {
+          this.templates.set(id, template);
+        });
+      }
+      
+      // Importer les FAQs
+      if (data.faqs) {
+        data.faqs.forEach(([id, faq]) => {
+          this.faqs.set(id, faq);
+        });
+      }
+      
+      // Mettre à jour la date si disponible
+      if (data.lastUpdated) {
+        this.lastUpdated = new Date(data.lastUpdated);
+      }
+      
+      // Reconstruire l'index de recherche
+      this.rebuildSearchIndex();
+      
+      return this;
+    } catch (error) {
+      console.error("Erreur lors de l'importation:", error);
+      throw new Error("Format de données invalide pour l'importation");
+    }
+  }
+
+  /**
+   * Reconstruit l'index de recherche
+   */
+  rebuildSearchIndex() {
+    this.searchIndex = new SearchIndex();
+    
+    // Réindexer tous les pays
+    this.countries.forEach((country, code) => {
+      this.searchIndex.indexCountry(code, country);
+    });
+    
+    // Réindexer tous les templates
+    this.templates.forEach((template, id) => {
+      this.searchIndex.indexTemplate(id, template);
+    });
+    
+    // Réindexer toutes les FAQs
+    this.faqs.forEach((faq, id) => {
+      this.searchIndex.indexFAQ(id, faq);
+    });
+  }
+}
+
+/**
+ * Moteur d'indexation et de recherche pour la base de connaissances
+ */
+class SearchIndex {
+  constructor() {
+    this.index = new Map();
+    this.documents = new Map();
+  }
+
+  /**
+   * Ajoute un terme à l'index
+   * @param {string} term - Terme à indexer
+   * @param {string} docId - ID du document
+   * @param {number} weight - Poids du terme dans le document
+   */
+  addToIndex(term, docId, weight = 1) {
+    term = term.toLowerCase().trim();
+    
+    if (!term) return;
+    
+    if (!this.index.has(term)) {
+      this.index.set(term, new Map());
+    }
+    
+    const termDocs = this.index.get(term);
+    termDocs.set(docId, (termDocs.get(docId) || 0) + weight);
+  }
+
+  /**
+   * Indexe un pays
+   * @param {string} countryCode - Code ISO du pays
+   * @param {Object} countryData - Données du pays
+   */
+  indexCountry(countryCode, countryData) {
+    const docId = `country:${countryCode}`;
+    
+    this.documents.set(docId, {
+      type: 'country',
+      id: countryCode,
+      data: countryData
+    });
+    
+    // Indexer le nom du pays avec un poids élevé
+    this.addToIndex(countryData.name, docId, 10);
+    
+    // Indexer le contenu des sections avec des poids différents
+    if (countryData.content) {
+      // Indexer les titres avec un poids plus élevé
+      if (countryData.content.titles) {
+        countryData.content.titles.forEach(title => {
+          this.addToIndex(title, docId, 5);
+        });
+      }
+      
+      // Indexer le texte
+      if (countryData.content.text) {
+        const words = countryData.content.text.split(/\s+/);
+        words.forEach(word => {
+          this.addToIndex(word, docId, 1);
+        });
+      }
+    }
+    
+    // Indexer les mots-clés avec un poids élevé
+    if (countryData.keywords) {
+      countryData.keywords.forEach(keyword => {
+        this.addToIndex(keyword, docId, 8);
+      });
+    }
+  }
+
+  /**
+   * Indexe un template
+   * @param {string} templateId - ID du template
+   * @param {Object} templateData - Données du template
+   */
+  indexTemplate(templateId, templateData) {
+    const docId = `template:${templateId}`;
+    
+    this.documents.set(docId, {
+      type: 'template',
+      id: templateId,
+      data: templateData
+    });
+    
+    // Indexer le titre avec un poids élevé
+    this.addToIndex(templateData.title, docId, 8);
+    
+    // Indexer la description
+    if (templateData.description) {
+      const words = templateData.description.split(/\s+/);
+      words.forEach(word => {
+        this.addToIndex(word, docId, 3);
+      });
+    }
+    
+    // Indexer les mots-clés avec un poids élevé
+    if (templateData.keywords) {
+      templateData.keywords.forEach(keyword => {
+        this.addToIndex(keyword, docId, 6);
+      });
+    }
+    
+    // Associer aux pays
+    if (templateData.countries) {
+      templateData.countries.forEach(country => {
+        this.addToIndex(country, docId, 4);
+      });
+    }
+  }
+
+  /**
+   * Indexe une FAQ
+   * @param {string} faqId - ID de la FAQ
+   * @param {Object} faqData - Données de la FAQ
+   */
+  indexFAQ(faqId, faqData) {
+    const docId = `faq:${faqId}`;
+    
+    this.documents.set(docId, {
+      type: 'faq',
+      id: faqId,
+      data: faqData
+    });
+    
+    // Indexer la question avec un poids élevé
+    this.addToIndex(faqData.question, docId, 10);
+    
+    // Indexer la réponse
+    if (faqData.answer) {
+      const words = faqData.answer.split(/\s+/);
+      words.forEach(word => {
+        this.addToIndex(word, docId, 2);
+      });
+    }
+    
+    // Indexer les catégories avec un poids moyen
+    if (faqData.categories) {
+      faqData.categories.forEach(category => {
+        this.addToIndex(category, docId, 5);
+      });
+    }
+    
+    // Associer aux pays
+    if (faqData.countries) {
+      faqData.countries.forEach(country => {
+        this.addToIndex(country, docId, 4);
+      });
+    }
+  }
+
+  /**
+   * Recherche dans l'index
+   * @param {string} query - Requête de recherche
+   * @param {Object} options - Options de recherche
+   * @returns {Array} - Résultats de recherche
+   */
+  search(query, options = {}) {
+    const terms = query.toLowerCase().split(/\s+/);
+    const scores = new Map();
+    
+    // Calculer les scores pour chaque terme
+    terms.forEach(term => {
+      if (this.index.has(term)) {
+        const termDocs = this.index.get(term);
+        
+        termDocs.forEach((weight, docId) => {
+          // Appliquer le filtre de pays si nécessaire
+          const doc = this.documents.get(docId);
+          
+          if (options.filter && options.filter.countryCode) {
+            const isCountryMatch = doc.type === 'country' && doc.id === options.filter.countryCode;
+            const hasCountryAssociation = doc.data.countries && 
+                                         doc.data.countries.includes(options.filter.countryCode);
+            
+            if (!isCountryMatch && !hasCountryAssociation) {
+              return; // Ignorer ce document s'il ne correspond pas au filtre pays
+            }
+          }
+          
+          scores.set(docId, (scores.get(docId) || 0) + weight);
+        });
+      }
+    });
+    
+    // Convertir en tableau et trier par score décroissant
+    const results = Array.from(scores.entries()).map(([docId, score]) => {
+      const doc = this.documents.get(docId);
+      return {
+        id: doc.id,
+        type: doc.type,
+        data: doc.data,
+        score
+      };
+    });
+    
+    results.sort((a, b) => b.score - a.score);
+    
+    // Limiter les résultats si nécessaire
+    if (options.limit && options.limit > 0) {
+      return results.slice(0, options.limit);
+    }
+    
+    return results;
+  }
+}
+
+/**
+ * Gestionnaire d'API pour la base de connaissances
+ */
+class KnowledgeBaseAPI {
+  constructor(knowledgeBase) {
+    this.knowledgeBase = knowledgeBase;
+  }
+
+  /**
+   * Traite une requête API
+   * @param {Object} request - Requête HTTP
+   * @returns {Object} - Réponse HTTP
+   */
+  handleRequest(request) {
+    const { method, path, params, body } = request;
+    
+    try {
+      // Routes pour les pays
+      if (path.startsWith('/api/countries')) {
+        return this.handleCountriesRequest(method, path, params, body);
+      }
+      
+      // Routes pour les templates
+      if (path.startsWith('/api/templates')) {
+        return this.handleTemplatesRequest(method, path, params, body);
+      }
+      
+      // Routes pour les FAQs
+      if (path.startsWith('/api/faqs')) {
+        return this.handleFAQsRequest(method, path, params, body);
+      }
+      
+      // Route de recherche
+      if (path === '/api/search') {
+        return this.handleSearchRequest(params);
+      }
+      
+      // Route d'export/import
+      if (path === '/api/export') {
+        return this.handleExportRequest();
+      }
+      
+      if (path === '/api/import') {
+        return this.handleImportRequest(body);
+      }
+      
+      // Route non trouvée
+      return {
+        status: 404,
+        body: { error: 'Route non trouvée' }
+      };
+    } catch (error) {
+      console.error('Erreur API:', error);
+      
+      return {
+        status: 500,
+        body: { error: 'Erreur serveur interne', message: error.message }
+      };
+    }
+  }
+
+  /**
+   * Gère les requêtes sur les pays
+   * @param {string} method - Méthode HTTP
+   * @param {string} path - Chemin de la requête
+   * @param {Object} params - Paramètres de la requête
+   * @param {Object} body - Corps de la requête
+   * @returns {Object} - Réponse HTTP
+   */
+  handleCountriesRequest(method, path, params, body) {
+    // GET /api/countries - Liste tous les pays
+    if (method === 'GET' && path === '/api/countries') {
+      const countries = [];
+      
+      this.knowledgeBase.countries.forEach((data, code) => {
+        countries.push({
+          code,
+          name: data.name,
+          lastUpdated: data.lastUpdated
+        });
+      });
+      
+      return {
+        status: 200,
+        body: { countries }
+      };
+    }
+    
+    // GET /api/countries/:code - Récupère un pays spécifique
+    if (method === 'GET' && path.match(/^\/api\/countries\/[A-Z]{2}$/)) {
+      const countryCode = path.split('/').pop();
+      const country = this.knowledgeBase.getCountry(countryCode);
+      
+      if (!country) {
+        return {
+          status: 404,
+          body: { error: 'Pays non trouvé' }
+        };
+      }
+      
+      return {
+        status: 200,
+        body: { code: countryCode, ...country }
+      };
+    }
+    
+    // POST /api/countries - Ajoute ou met à jour un pays
+    if (method === 'POST' && path === '/api/countries') {
+      if (!body || !body.code || !body.name) {
+        return {
+          status: 400,
+          body: { error: 'Données de pays invalides' }
+        };
+      }
+      
+      this.knowledgeBase.addCountry(body.code, {
+        name: body.name,
+        content: body.content || {},
+        keywords: body.keywords || [],
+        ...body
+      });
+      
+      return {
+        status: 201,
+        body: { success: true, message: 'Pays ajouté avec succès' }
+      };
+    }
+    
+    // DELETE /api/countries/:code - Supprime un pays
+    if (method === 'DELETE' && path.match(/^\/api\/countries\/[A-Z]{2}$/)) {
+      const countryCode = path.split('/').pop();
+      
+      if (!this.knowledgeBase.countries.has(countryCode)) {
+        return {
+          status: 404,
+          body: { error: 'Pays non trouvé' }
+        };
+      }
+      
+      this.knowledgeBase.countries.delete(countryCode);
+      this.knowledgeBase.updateLastModified();
+      this.knowledgeBase.rebuildSearchIndex();
+      
+      return {
+        status: 200,
+        body: { success: true, message: 'Pays supprimé avec succès' }
+      };
+    }
+    
+    return {
+      status: 404,
+      body: { error: 'Route pays non trouvée' }
+    };
+  }
+
+  /**
+   * Gère les requêtes sur les templates
+   * @param {string} method - Méthode HTTP
+   * @param {string} path - Chemin de la requête
+   * @param {Object} params - Paramètres de la requête
+   * @param {Object} body - Corps de la requête
+   * @returns {Object} - Réponse HTTP
+   */
+  handleTemplatesRequest(method, path, params, body) {
+    // GET /api/templates - Liste tous les templates
+    if (method === 'GET' && path === '/api/templates') {
+      const templates = [];
+      
+      this.knowledgeBase.templates.forEach((data, id) => {
+        templates.push({
+          id,
+          title: data.title,
+          type: data.type,
+          countries: data.countries || [],
+          lastUpdated: data.lastUpdated
+        });
+      });
+      
+      return {
+        status: 200,
+        body: { templates }
+      };
+    }
+    
+    // GET /api/templates/:id - Récupère un template spécifique
+    if (method === 'GET' && path.match(/^\/api\/templates\/[\w-]+$/)) {
+      const templateId = path.split('/').pop();
+      const template = this.knowledgeBase.getTemplate(templateId);
+      
+      if (!template) {
+        return {
+          status: 404,
+          body: { error: 'Template non trouvé' }
+        };
+      }
+      
+      return {
+        status: 200,
+        body: { id: templateId, ...template }
+      };
+    }
+    
+    // GET /api/templates/country/:code - Récupère les templates par pays
+    if (method === 'GET' && path.match(/^\/api\/templates\/country\/[A-Z]{2}$/)) {
+      const countryCode = path.split('/').pop();
+      const templates = this.knowledgeBase.getTemplatesByCountry(countryCode);
+      
+      return {
+        status: 200,
+        body: { templates }
+      };
+    }
+    
+    // POST /api/templates - Ajoute ou met à jour un template
+    if (method === 'POST' && path === '/api/templates') {
+      if (!body || !body.id || !body.title) {
+        return {
+          status: 400,
+          body: { error: 'Données de template invalides' }
+        };
+      }
+      
+      this.knowledgeBase.addTemplate(body.id, {
+        title: body.title,
+        description: body.description || '',
+        type: body.type || 'document',
+        content: body.content || '',
+        countries: body.countries || [],
+        keywords: body.keywords || [],
+        ...body
+      });
+      
+      return {
+        status: 201,
+        body: { success: true, message: 'Template ajouté avec succès' }
+      };
+    }
+    
+    // DELETE /api/templates/:id - Supprime un template
+    if (method === 'DELETE' && path.match(/^\/api\/templates\/[\w-]+$/)) {
+      const templateId = path.split('/').pop();
+      
+      if (!this.knowledgeBase.templates.has(templateId)) {
+        return {
+          status: 404,
+          body: { error: 'Template non trouvé' }
+        };
+      }
+      
+      this.knowledgeBase.templates.delete(templateId);
+      this.knowledgeBase.updateLastModified();
+      this.knowledgeBase.rebuildSearchIndex();
+      
+      return {
+        status: 200,
+        body: { success: true, message: 'Template supprimé avec succès' }
+      };
+    }
+    
+    return {
+      status: 404,
+      body: { error: 'Route template non trouvée' }
+    };
+  }
+
+  /**
+   * Gère les requêtes sur les FAQs
+   * @param {string} method - Méthode HTTP
+   * @param {string} path - Chemin de la requête
+   * @param {Object} params - Paramètres de la requête
+   * @param {Object} body - Corps de la requête
+   * @returns {Object} - Réponse HTTP
+   */
+  handleFAQsRequest(method, path, params, body) {
+    // GET /api/faqs - Liste toutes les FAQs
+    if (method === 'GET' && path === '/api/faqs') {
+      const faqs = [];
+      
+      this.knowledgeBase.faqs.forEach((data, id) => {
+        faqs.push({
+          id,
+          question: data.question,
+          categories: data.categories || [],
+          countries: data.countries || [],
+          lastUpdated: data.lastUpdated
+        });
+      });
+      
+      return {
+        status: 200,
+        body: { faqs }
+      };
+    }
+    
+    // GET /api/faqs/:id - Récupère une FAQ spécifique
+    if (method === 'GET' && path.match(/^\/api\/faqs\/[\w-]+$/)) {
+      const faqId = path.split('/').pop();
+      const faq = this.knowledgeBase.getFAQ(faqId);
+      
+      if (!faq) {
+        return {
+          status: 404,
+          body: { error: 'FAQ non trouvée' }
+        };
+      }
+      
+      return {
+        status: 200,
+        body: { id: faqId, ...faq }
+      };
+    }
+    
+    // GET /api/faqs/country/:code - Récupère les FAQs par pays
+    if (method === 'GET' && path.match(/^\/api\/faqs\/country\/[A-Z]{2}$/)) {
+      const countryCode = path.split('/').pop();
+      const faqs = this.knowledgeBase.getFAQsByCountry(countryCode);
+      
+      return {
+        status: 200,
+        body: { faqs }
+      };
+    }
+    
+    // POST /api/faqs - Ajoute ou met à jour une FAQ
+    if (method === 'POST' && path === '/api/faqs') {
+      if (!body || !body.id || !body.question || !body.answer) {
+        return {
+          status: 400,
+          body: { error: 'Données de FAQ invalides' }
+        };
+      }
+      
+      this.knowledgeBase.addFAQ(body.id, {
+        question: body.question,
+        answer: body.answer,
+        categories: body.categories || [],
+        countries: body.countries || [],
+        ...body
+      });
+      
+      return {
+        status: 201,
+        body: { success: true, message: 'FAQ ajoutée avec succès' }
+      };
+    }
+    
+    // DELETE /api/faqs/:id - Supprime une FAQ
+    if (method === 'DELETE' && path.match(/^\/api\/faqs\/[\w-]+$/)) {
+      const faqId = path.split('/').pop();
+      
+      if (!this.knowledgeBase.faqs.has(faqId)) {
+        return {
+          status: 404,
+          body: { error: 'FAQ non trouvée' }
+        };
+      }
+      
+      this.knowledgeBase.faqs.delete(faqId);
+      this.knowledgeBase.updateLastModified();
+      this.knowledgeBase.rebuildSearchIndex();
+      
+      return {
+        status: 200,
+        body: { success: true, message: 'FAQ supprimée avec succès' }
+      };
+    }
+    
+    return {
+      status: 404,
+      body: { error: 'Route FAQ non trouvée' }
+    };
+  }
+
+  /**
+   * Gère les requêtes de recherche
+   * @param {Object} params - Paramètres de la requête
+   * @returns {Object} - Réponse HTTP
+   */
+  handleSearchRequest(params) {
+    if (!params || !params.q) {
+      return {
+        status: 400,
+        body: { error: 'Requête de recherche manquante' }
+      };
+    }
+    
+    const options = {
+      limit: params.limit ? parseInt(params.limit) : 20
+    };
+    
+    // Filtrer par pays si spécifié
+    if (params.country) {
+      options.filter = { countryCode: params.country.toUpperCase() };
+    }
+    
+    // Filtrer par type si spécifié
+    if (params.type && ['country', 'template', 'faq'].includes(params.type)) {
+      if (!options.filter) options.filter = {};
+      options.filter.type = params.type;
+    }
+    
+    const results = this.knowledgeBase.search(params.q, options);
+    
+    return {
+      status: 200,
+      body: { results }
+    };
+  }
+
+  /**
+   * Gère les requêtes d'export
+   * @returns {Object} - Réponse HTTP
+   */
+  handleExportRequest() {
+    return {
+      status: 200,
+      body: JSON.parse(this.knowledgeBase.export())
+    };
+  }
+
+  /**
+   * Gère les requêtes d'import
+   * @param {Object} body - Corps de la requête
+   * @returns {Object} - Réponse HTTP
+   */
+  handleImportRequest(body) {
+    if (!body) {
+      return {
+        status: 400,
+        body: { error: 'Données d\'import manquantes' }
+      };
+    }
+    
+    try {
+      const jsonData = JSON.stringify(body);
+      this.knowledgeBase.import(jsonData);
+      
+      return {
+        status: 200,
+        body: { 
+          success: true, 
+          message: 'Import réussi',
+          stats: {
+            countries: this.knowledgeBase.countries.size,
+            templates: this.knowledgeBase.templates.size,
+            faqs: this.knowledgeBase.faqs.size
+          } 
+        }
+      };
+    } catch (error) {
+      return {
+        status: 400,
+        body: { error: 'Erreur lors de l\'import', message: error.message }
+      };
+    }
+  }
+}
+
+/**
+ * Exemple d'utilisation
+ */
+function main() {
+  // Initialiser la base de connaissances
+  const knowledgeBase = new KnowledgeBase();
+  
+  // Ajouter quelques données d'exemple
+  knowledgeBase.addCountry('FR', {
+    name: 'France',
+    content: {
+     titles: ['Système éducatif en France', 'Procédure de visa étudiant', 'Logement étudiant'],
+      text: 'La France dispose d\'un système éducatif de haute qualité avec des universités prestigieuses. Le visa étudiant requiert plusieurs documents incluant une attestation d\'admission et une preuve de ressources suffisantes. Les étudiants peuvent bénéficier d\'aides au logement.'
+    },
+    keywords: ['études supérieures', 'visa', 'logement', 'université', 'grandes écoles'],
+    costOfLiving: {
+      currency: 'EUR',
+      housing: {
+        average: 600,
+        range: '350-900'
+      },
+      food: {
+        monthly: 250
+      },
+      transportation: {
+        monthly: 70
+      }
+    },
+    visaProcess: {
+      types: ['Visa long séjour étudiant', 'Visa court séjour'],
+      requirements: [
+        'Attestation d\'admission',
+        'Preuve de ressources suffisantes',
+        'Assurance santé',
+        'Logement'
+      ],
+      timeframe: '2-3 semaines',
+      fees: 99
+    }
+  });
+  
+  knowledgeBase.addCountry('UK', {
+    name: 'Royaume-Uni',
+    content: {
+      titles: ['Système universitaire britannique', 'Student visa', 'Accommodations'],
+      text: 'Le Royaume-Uni abrite certaines des universités les plus prestigieuses au monde. Le visa étudiant post-Brexit nécessite un parrainage par une institution agréée. Le coût de la vie varie considérablement entre Londres et les autres villes.'
+    },
+    keywords: ['bachelor', 'master', 'doctorat', 'visa', 'logement'],
+    costOfLiving: {
+      currency: 'GBP',
+      housing: {
+        average: 800,
+        range: '500-1500'
+      },
+      food: {
+        monthly: 200
+      },
+      transportation: {
+        monthly: 150
+      }
+    },
+    visaProcess: {
+      types: ['Student Route visa', 'Short-term study visa'],
+      requirements: [
+        'CAS (Confirmation of Acceptance for Studies)',
+        'Preuve de fonds suffisants',
+        'Test d\'anglais IELTS',
+        'Preuve de logement'
+      ],
+      timeframe: '3 semaines',
+      fees: 348
+    }
+  });
+  
+  // Ajouter des templates
+  knowledgeBase.addTemplate('cv-france', {
+    title: 'Modèle de CV pour la France',
+    description: 'Template de CV adapté aux standards français pour les étudiants internationaux',
+    type: 'document',
+    format: 'docx',
+    content: '/* Structure de CV française */',
+    countries: ['FR'],
+    keywords: ['CV', 'emploi', 'stage', 'candidature']
+  });
+  
+  knowledgeBase.addTemplate('motivation-uk', {
+    title: 'Lettre de motivation pour universités britanniques',
+    description: 'Modèle de personal statement pour candidatures universitaires au UK',
+    type: 'document',
+    format: 'docx',
+    content: '/* Structure de personal statement */',
+    countries: ['UK'],
+    keywords: ['motivation', 'candidature', 'admission', 'université']
+  });
+  
+  // Ajouter des FAQs
+  knowledgeBase.addFAQ('visa-france-1', {
+    question: 'Comment obtenir un visa étudiant pour la France?',
+    answer: 'Pour obtenir un visa étudiant pour la France, vous devez d\'abord être accepté dans un établissement d\'enseignement supérieur français. Ensuite, vous devez créer un compte sur le site Campus France, rassembler les documents nécessaires (attestation d\'admission, preuve de ressources financières, assurance santé, etc.), prendre rendez-vous au consulat français de votre pays et vous présenter à l\'entretien avec tous vos documents.',
+    categories: ['visa', 'admission'],
+    countries: ['FR']
+  });
+  
+  knowledgeBase.addFAQ('logement-uk-1', {
+    question: 'Quelles sont les options de logement étudiant au Royaume-Uni?',
+    answer: 'Au Royaume-Uni, les étudiants ont plusieurs options de logement: les résidences universitaires (university halls), les logements privés partagés (private halls), la colocation (house sharing) ou la location individuelle. Les résidences universitaires sont généralement réservées aux étudiants de première année. Pour les autres options, des sites comme SpareRoom ou Rightmove peuvent vous aider à trouver un logement adapté à votre budget.',
+    categories: ['logement', 'vie pratique'],
+    countries: ['UK']
+  });
+  
+  // Initialiser l'API
+  const api = new KnowledgeBaseAPI(knowledgeBase);
+  
+  // Exemple de requête API
+  const searchRequest = {
+    method: 'GET',
+    path: '/api/search',
+    params: { q: 'visa étudiant', country: 'FR', limit: 5 },
+    body: null
+  };
+  
+  const searchResponse = api.handleRequest(searchRequest);
+  console.log('Résultats de recherche:', JSON.stringify(searchResponse, null, 2));
+  
+  // Exemple d'ajout de contenu via API
+  const addFAQRequest = {
+    method: 'POST',
+    path: '/api/faqs',
+    params: {},
+    body: {
+      id: 'sante-fr-1',
+      question: 'Comment fonctionne l\'assurance maladie pour les étudiants internationaux en France?',
+      answer: 'Les étudiants internationaux en France peuvent bénéficier de la sécurité sociale française. Pour cela, vous devez vous inscrire sur le site etudiant-etranger.ameli.fr après votre arrivée en France. L\'assurance maladie couvre environ 70% des frais médicaux. Il est recommandé de souscrire à une assurance complémentaire (mutuelle) pour couvrir les 30% restants.',
+      categories: ['santé', 'assurance', 'vie pratique'],
+      countries: ['FR']
+    }
+  };
+  
+  const addFAQResponse = api.handleRequest(addFAQRequest);
+  console.log('Ajout de FAQ:', JSON.stringify(addFAQResponse, null, 2));
+  
+  return {
+    knowledgeBase,
+    api
+  };
+}
+
+/**
+ * Interface utilisateur pour la base de connaissances
+ */
+class KnowledgeBaseUI {
+  constructor(api) {
+    this.api = api;
+    this.currentCountry = null;
+  }
+
+  /**
+   * Initialise l'interface utilisateur
+   * @param {HTMLElement} container - Élément conteneur pour l'UI
+   */
+  initialize(container) {
+    this.container = container;
+    this.render();
+  }
+
+  /**
+   * Affiche l'interface utilisateur
+   */
+  render() {
+    if (!this.container) return;
+    
+    // Structure principale
+    this.container.innerHTML = `
+      <div class="kb-container">
+        <div class="kb-header">
+          <h1>Base de connaissances DEI-StudyBloom</h1>
+          <div class="kb-search">
+            <input type="text" id="kb-search-input" placeholder="Rechercher...">
+            <button id="kb-search-button">Rechercher</button>
+          </div>
+        </div>
+        
+        <div class="kb-main">
+          <div class="kb-sidebar">
+            <h2>Pays</h2>
+            <ul id="kb-countries-list" class="kb-list"></ul>
+            
+            <h2>Catégories</h2>
+            <ul class="kb-categories">
+              <li data-category="visa">Visas</li>
+              <li data-category="logement">Logement</li>
+              <li data-category="finances">Finances</li>
+              <li data-category="education">Éducation</li>
+              <li data-category="sante">Santé</li>
+              <li data-category="culture">Culture & Adaptation</li>
+            </ul>
+          </div>
+          
+          <div class="kb-content">
+            <div id="kb-welcome" class="kb-panel active">
+              <h2>Bienvenue dans la base de connaissances</h2>
+              <p>Sélectionnez un pays ou effectuez une recherche pour commencer.</p>
+            </div>
+            
+            <div id="kb-country-info" class="kb-panel">
+              <div id="kb-country-header"></div>
+              <div class="kb-tabs">
+                <div class="kb-tab active" data-tab="overview">Aperçu</div>
+                <div class="kb-tab" data-tab="visa">Visas & Immigration</div>
+                <div class="kb-tab" data-tab="education">Système éducatif</div>
+                <div class="kb-tab" data-tab="practical">Vie pratique</div>
+                <div class="kb-tab" data-tab="templates">Modèles & Documents</div>
+                <div class="kb-tab" data-tab="faqs">FAQ</div>
+              </div>
+              
+              <div id="kb-tab-content" class="kb-tab-content">
+                <!-- Contenu des onglets -->
+              </div>
+            </div>
+            
+            <div id="kb-search-results" class="kb-panel">
+              <h2>Résultats de recherche</h2>
+              <div id="kb-results-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // Chargement initial des données
+    this.loadCountries();
+    
+    // Ajout des écouteurs d'événements
+    this.attachEventListeners();
+  }
+
+  /**
+   * Charge la liste des pays
+   */
+  loadCountries() {
+    const request = {
+      method: 'GET',
+      path: '/api/countries',
+      params: {},
+      body: null
+    };
+    
+    const response = this.api.handleRequest(request);
+    
+    if (response.status === 200 && response.body.countries) {
+      const countriesList = document.getElementById('kb-countries-list');
+      
+      if (countriesList) {
+        countriesList.innerHTML = '';
+        
+        response.body.countries.forEach(country => {
+          const listItem = document.createElement('li');
+          listItem.setAttribute('data-country', country.code);
+          listItem.textContent = country.name;
+          listItem.addEventListener('click', () => this.loadCountryInfo(country.code));
+          
+          countriesList.appendChild(listItem);
+        });
+      }
+    }
+  }
+
+  /**
+   * Charge les informations d'un pays
+   * @param {string} countryCode - Code ISO du pays
+   */
+  loadCountryInfo(countryCode) {
+    const request = {
+      method: 'GET',
+      path: `/api/countries/${countryCode}`,
+      params: {},
+      body: null
+    };
+    
+    const response = this.api.handleRequest(request);
+    
+    if (response.status === 200) {
+      this.currentCountry = response.body;
+      
+      // Afficher le panneau du pays
+      this.showPanel('kb-country-info');
+      
+      // Mettre à jour l'en-tête du pays
+      const countryHeader = document.getElementById('kb-country-header');
+      
+      if (countryHeader) {
+        countryHeader.innerHTML = `
+          <h2>${this.currentCountry.name}</h2>
+          <p class="kb-country-description">
+            Informations et ressources pour les études en ${this.currentCountry.name}.
+          </p>
+        `;
+      }
+      
+      // Charger l'onglet actif
+      const activeTab = document.querySelector('.kb-tab.active');
+      
+      if (activeTab) {
+        this.loadTabContent(activeTab.getAttribute('data-tab'));
+      }
+    }
+  }
+
+  /**
+   * Charge le contenu d'un onglet
+   * @param {string} tabName - Nom de l'onglet à charger
+   */
+  loadTabContent(tabName) {
+    if (!this.currentCountry) return;
+    
+    const tabContent = document.getElementById('kb-tab-content');
+    
+    if (!tabContent) return;
+    
+    switch (tabName) {
+      case 'overview':
+        this.loadOverviewTab(tabContent);
+        break;
+      case 'visa':
+        this.loadVisaTab(tabContent);
+        break;
+      case 'templates':
+        this.loadTemplatesTab(tabContent);
+        break;
+      case 'faqs':
+        this.loadFAQsTab(tabContent);
+        break;
+      default:
+        tabContent.innerHTML = `<p>Contenu en cours de développement pour l'onglet ${tabName}.</p>`;
+    }
+  }
+
+  /**
+   * Charge l'onglet d'aperçu
+   * @param {HTMLElement} container - Conteneur pour le contenu
+   */
+  loadOverviewTab(container) {
+    // Données de coût de la vie
+    const costOfLiving = this.currentCountry.costOfLiving || {};
+    const currency = costOfLiving.currency || '€';
+    
+    container.innerHTML = `
+      <div class="kb-overview">
+        <div class="kb-overview-section">
+          <h3>À propos de ${this.currentCountry.name}</h3>
+          <div class="kb-overview-content">
+            <p>${this.currentCountry.content?.text || 'Informations à venir.'}</p>
+          </div>
+        </div>
+        
+        <div class="kb-overview-section">
+          <h3>Coût de la vie</h3>
+          <div class="kb-cost-of-living">
+            <div class="kb-cost-item">
+              <h4>Logement</h4>
+              <p class="kb-cost-value">${costOfLiving.housing?.average || 'N/A'} ${currency}</p>
+              <p class="kb-cost-range">Fourchette: ${costOfLiving.housing?.range || 'N/A'}</p>
+            </div>
+            
+            <div class="kb-cost-item">
+              <h4>Alimentation</h4>
+              <p class="kb-cost-value">${costOfLiving.food?.monthly || 'N/A'} ${currency}</p>
+              <p class="kb-cost-range">Par mois</p>
+            </div>
+            
+            <div class="kb-cost-item">
+              <h4>Transport</h4>
+              <p class="kb-cost-value">${costOfLiving.transportation?.monthly || 'N/A'} ${currency}</p>
+              <p class="kb-cost-range">Par mois</p>
+            </div>
+          </div>
+        </div>
+        
+        <div class="kb-overview-section">
+          <h3>Points clés</h3>
+          <ul class="kb-key-points">
+            ${this.currentCountry.keywords?.map(keyword => `<li>${keyword}</li>`).join('') || '<li>Information à venir</li>'}
+          </ul>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Charge l'onglet des visas
+   * @param {HTMLElement} container - Conteneur pour le contenu
+   */
+  loadVisaTab(container) {
+    const visaProcess = this.currentCountry.visaProcess || {};
+    
+    container.innerHTML = `
+      <div class="kb-visa">
+        <div class="kb-visa-section">
+          <h3>Types de visas</h3>
+          <ul class="kb-visa-types">
+            ${visaProcess.types?.map(type => `<li>${type}</li>`).join('') || '<li>Information à venir</li>'}
+          </ul>
+        </div>
+        
+        <div class="kb-visa-section">
+          <h3>Documents requis</h3>
+          <ul class="kb-visa-requirements">
+            ${visaProcess.requirements?.map(req => `<li>${req}</li>`).join('') || '<li>Information à venir</li>'}
+          </ul>
+        </div>
+        
+        <div class="kb-visa-section">
+          <h3>Informations pratiques</h3>
+          <div class="kb-visa-info">
+            <p><strong>Délai de traitement:</strong> ${visaProcess.timeframe || 'Variable'}</p>
+            <p><strong>Frais:</strong> ${visaProcess.fees ? `${visaProcess.fees} ${this.currentCountry.costOfLiving?.currency || '€'}` : 'Variable'}</p>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Charge l'onglet des templates
+   * @param {HTMLElement} container - Conteneur pour le contenu
+   */
+  loadTemplatesTab(container) {
+    const request = {
+      method: 'GET',
+      path: `/api/templates/country/${this.currentCountry.code}`,
+      params: {},
+      body: null
+    };
+    
+    const response = this.api.handleRequest(request);
+    
+    if (response.status === 200 && response.body.templates) {
+      const templates = response.body.templates;
+      
+      if (templates.length === 0) {
+        container.innerHTML = `<p>Aucun modèle disponible pour ${this.currentCountry.name} pour le moment.</p>`;
+        return;
+      }
+      
+      container.innerHTML = `
+        <div class="kb-templates">
+          <h3>Modèles disponibles pour ${this.currentCountry.name}</h3>
+          <div class="kb-templates-list">
+            ${templates.map(template => `
+              <div class="kb-template-item">
+                <h4>${template.title}</h4>
+                <p>${template.description || ''}</p>
+                <div class="kb-template-tags">
+                  <span class="kb-template-type">${template.type || 'Document'}</span>
+                  ${template.format ? `<span class="kb-template-format">${template.format}</span>` : ''}
+                </div>
+                <button class="kb-template-download" data-id="${template.id}">Télécharger</button>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+      
+      // Ajouter des écouteurs pour les téléchargements
+      const downloadButtons = container.querySelectorAll('.kb-template-download');
+      
+      downloadButtons.forEach(button => {
+        button.addEventListener('click', (event) => {
+          const templateId = event.target.getAttribute('data-id');
+          this.downloadTemplate(templateId);
+        });
+      });
+    } else {
+      container.innerHTML = `<p>Erreur lors du chargement des modèles.</p>`;
+    }
+  }
+
+  /**
+   * Charge l'onglet des FAQs
+   * @param {HTMLElement} container - Conteneur pour le contenu
+   */
+  loadFAQsTab(container) {
+    const request = {
+      method: 'GET',
+      path: `/api/faqs/country/${this.currentCountry.code}`,
+      params: {},
+      body: null
+    };
+    
+    const response = this.api.handleRequest(request);
+    
+    if (response.status === 200 && response.body.faqs) {
+      const faqs = response.body.faqs;
+      
+      if (faqs.length === 0) {
+        container.innerHTML = `<p>Aucune FAQ disponible pour ${this.currentCountry.name} pour le moment.</p>`;
+        return;
+      }
+      
+      container.innerHTML = `
+        <div class="kb-faqs">
+          <h3>Questions fréquentes pour ${this.currentCountry.name}</h3>
+          <div class="kb-accordion">
+            ${faqs.map((faq, index) => `
+              <div class="kb-accordion-item">
+                <div class="kb-accordion-header" data-index="${index}">${faq.question}</div>
+                <div class="kb-accordion-content">
+                  <p>${faq.answer}</p>
+                  ${faq.categories && faq.categories.length > 0 ? `
+                    <div class="kb-faq-categories">
+                      ${faq.categories.map(cat => `<span class="kb-faq-category">${cat}</span>`).join('')}
+                    </div>
+                  ` : ''}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+      
+      // Ajouter des écouteurs pour l'accordéon
+      const accordionHeaders = container.querySelectorAll('.kb-accordion-header');
+      
+      accordionHeaders.forEach(header => {
+        header.addEventListener('click', (event) => {
+          const header = event.target;
+          const content = header.nextElementSibling;
+          
+          header.classList.toggle('active');
+          
+          if (content.style.maxHeight) {
+            content.style.maxHeight = null;
+          } else {
+            content.style.maxHeight = content.scrollHeight + 'px';
+          }
+        });
+      });
+    } else {
+      container.innerHTML = `<p>Erreur lors du chargement des FAQs.</p>`;
+    }
+  }
+
+  /**
+   * Gère la recherche dans la base de connaissances
+   * @param {string} query - Requête de recherche
+   */
+  search(query) {
+    if (!query.trim()) return;
+    
+    const request = {
+      method: 'GET',
+      path: '/api/search',
+      params: {
+        q: query,
+        limit: 10,
+        country: this.currentCountry ? this.currentCountry.code : null
+      },
+      body: null
+    };
+    
+    const response = this.api.handleRequest(request);
+    
+    if (response.status === 200 && response.body.results) {
+      const results = response.body.results;
+      
+      this.showPanel('kb-search-results');
+      
+      const resultsContainer = document.getElementById('kb-results-list');
+      
+      if (!resultsContainer) return;
+      
+      if (results.length === 0) {
+        resultsContainer.innerHTML = `<p>Aucun résultat trouvé pour "${query}".</p>`;
+        return;
+      }
+      
+      resultsContainer.innerHTML = `
+        <p>Résultats pour "${query}" (${results.length}):</p>
+        <div class="kb-results">
+          ${results.map(result => {
+            let content = '';
+            
+            switch (result.type) {
+              case 'country':
+                content = `
+                  <div class="kb-result-item kb-country-result">
+                    <h3>${result.data.name}</h3>
+                    <p>${result.data.content?.text?.substring(0, 150)}${result.data.content?.text?.length > 150 ? '...' : ''}</p>
+                    <button class="kb-view-country" data-code="${result.id}">Voir le pays</button>
+                  </div>
+                `;
+                break;
+              case 'template':
+                content = `
+                  <div class="kb-result-item kb-template-result">
+                    <h3>${result.data.title}</h3>
+                    <p>${result.data.description || 'Modèle de document'}</p>
+                    <span class="kb-result-type">Template</span>
+                    <button class="kb-view-template" data-id="${result.id}">Voir le modèle</button>
+                  </div>
+                `;
+                break;
+              case 'faq':
+                content = `
+                  <div class="kb-result-item kb-faq-result">
+                    <h3>${result.data.question}</h3>
+                    <p>${result.data.answer?.substring(0, 150)}${result.data.answer?.length > 150 ? '...' : ''}</p>
+                    <span class="kb-result-type">FAQ</span>
+                    <button class="kb-view-faq" data-id="${result.id}">Voir la réponse</button>
+                  </div>
+                `;
+                break;
+            }
+            
+            return content;
+          }).join('')}
+        </div>
+      `;
+      
+      // Ajouter des écouteurs d'événements pour les boutons de résultats
+      this.attachSearchResultListeners();
+    }
+  }
+
+  /**
+   * Télécharge un template
+   * @param {string} templateId - ID du template
+   */
+  downloadTemplate(templateId) {
+    const request = {
+      method: 'GET',
+      path: `/api/templates/${templateId}`,
+      params: {},
+      body: null
+    };
+    
+    const response = this.api.handleRequest(request);
+    
+    if (response.status === 200) {
+      // Dans un environnement réel, ceci déclencherait un téléchargement
+      alert(`Téléchargement du modèle "${response.body.title}" en cours...`);
+      console.log(`Téléchargement du template ${templateId}: ${response.body.title}`);
+    }
+  }
+
+  /**
+   * Affiche un panneau spécifique
+   * @param {string} panelId - ID du panneau à afficher
+   */
+  showPanel(panelId) {
+    const panels = document.querySelectorAll('.kb-panel');
+    
+    panels.forEach(panel => {
+      panel.classList.remove('active');
+    });
+    
+    const targetPanel = document.getElementById(panelId);
+    
+    if (targetPanel) {
+      targetPanel.classList.add('active');
+    }
+  }
+
+  /**
+   * Attache les écouteurs d'événements
+   */
+  attachEventListeners() {
+    // Écouteur pour la recherche
+    const searchInput = document.getElementById('kb-search-input');
+    const searchButton = document.getElementById('kb-search-button');
+    
+    if (searchInput && searchButton) {
+      searchButton.addEventListener('click', () => {
+        this.search(searchInput.value);
+      });
+      
+      searchInput.addEventListener('keypress', (event) => {
+        if (event.key === 'Enter') {
+          this.search(searchInput.value);
+        }
+      });
+    }
+    
+    // Écouteurs pour les onglets
+    const tabs = document.querySelectorAll('.kb-tab');
+    
+    tabs.forEach(tab => {
+      tab.addEventListener('click', (event) => {
+        tabs.forEach(t => t.classList.remove('active'));
+        event.target.classList.add('active');
+        
+        const tabName = event.target.getAttribute('data-tab');
+        this.loadTabContent(tabName);
+      });
+    });
+    
+    // Écouteurs pour les catégories
+    const categories = document.querySelectorAll('.kb-categories li');
+    
+    categories.forEach(category => {
+      category.addEventListener('click', (event) => {
+        const categoryName = event.target.getAttribute('data-category');
+        this.search(categoryName);
+      });
+    });
+  }
+
+  /**
+   * Attache les écouteurs d'événements aux résultats de recherche
+   */
+  attachSearchResultListeners() {
+    // Écouteurs pour les pays
+    const countryButtons = document.querySelectorAll('.kb-view-country');
+    
+    countryButtons.forEach(button => {
+      button.addEventListener('click', (event) => {
+        const countryCode = event.target.getAttribute('data-code');
+        this.loadCountryInfo(countryCode);
+      });
+    });
+    
+    // Écouteurs pour les templates
+    const templateButtons = document.querySelectorAll('.kb-view-template');
+    
+    templateButtons.forEach(button => {
+      button.addEventListener('click', (event) => {
+        const templateId = event.target.getAttribute('data-id');
+        
+        // Charger le pays associé au template
+        const request = {
+          method: 'GET',
+          path: `/api/templates/${templateId}`,
+          params: {},
+          body: null
+        };
+        
+        const response = this.api.handleRequest(request);
+        
+        if (response.status === 200 && response.body.countries && response.body.countries.length > 0) {
+          this.loadCountryInfo(response.body.countries[0]);
+          
+          // Sélectionner l'onglet des templates après le chargement du pays
+          setTimeout(() => {
+            const templateTab = document.querySelector('.kb-tab[data-tab="templates"]');
+            
+            if (templateTab) {
+              const event = new Event('click');
+              templateTab.dispatchEvent(event);
+            }
+          }, 100);
+        }
+      });
+    });
+    
+    // Écouteurs pour les FAQs
+    const faqButtons = document.querySelectorAll('.kb-view-faq');
+    
+    faqButtons.forEach(button => {
+      button.addEventListener('click', (event) => {
+        const faqId = event.target.getAttribute('data-id');
+        
+        // Charger le pays associé à la FAQ
+        const request = {
+          method: 'GET',
+          path: `/api/faqs/${faqId}`,
+          params: {},
+          body: null
+        };
+        
+        const response = this.api.handleRequest(request);
+        
+        if (response.status === 200 && response.body.countries && response.body.countries.length > 0) {
+          this.loadCountryInfo(response.body.countries[0]);
+          
+          // Sélectionner l'onglet des FAQs après le chargement du pays
+          setTimeout(() => {
+            const faqTab = document.querySelector('.kb-tab[data-tab="faqs"]');
+            
+            if (faqTab) {
+              const event = new Event('click');
+              faqTab.dispatchEvent(event);
+              
+              // Ouvrir l'accordéon pour cette FAQ
+              setTimeout(() => {
+                const faqAccordions = document.querySelectorAll('.kb-accordion-header');
+                const questionText = response.body.question;
+                
+                faqAccordions.forEach((accordion) => {
+                  if (accordion.textContent === questionText) {
+                    accordion.click();
+                  }
+                });
+              }, 100);
+            }
+          }, 100);
+        }
+      });
+    });
+  }
+}
+
+// Point d'entrée pour l'application
+function initializeKnowledgeBase() {
+  const { knowledgeBase, api } = main();
+  
+  // Dans un environnement navigateur, initialiser l'interface utilisateur
+  if (typeof document !== 'undefined') {
+    const container = document.getElementById('kb-container');
+    
+    if (container) {
+        const ui = new KnowledgeBaseUI(api);
+        ui.initialize(container);
+      }
+    }
+  }
+  
+  // Pour l'utilisation dans un environnement Node.js
+  return {
+    knowledgeBase,
+    api
+  };
+}
+
+// CSS pour l'interface utilisateur
+const styles = `
+  .kb-container {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+    color: #333;
+  }
+  
+  .kb-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #eaeaea;
+  }
+  
+  .kb-header h1 {
+    margin: 0;
+    color: #0066cc;
+    font-size: 24px;
+  }
+  
+  .kb-search {
+    display: flex;
+    width: 50%;
+  }
+  
+  .kb-search input {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px 0 0 4px;
+    font-size: 14px;
+  }
+  
+  .kb-search button {
+    padding: 10px 20px;
+    background-color: #0066cc;
+    border: none;
+    border-radius: 0 4px 4px 0;
+    color: white;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  
+  .kb-main {
+    display: flex;
+    gap: 30px;
+  }
+  
+  .kb-sidebar {
+    width: 25%;
+    min-width: 200px;
+  }
+  
+  .kb-sidebar h2 {
+    font-size: 18px;
+    margin-top: 30px;
+    margin-bottom: 15px;
+    color: #333;
+  }
+  
+  .kb-list, .kb-categories {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  
+  .kb-list li, .kb-categories li {
+    padding: 10px 15px;
+    margin-bottom: 5px;
+    background-color: #f5f5f5;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+  
+  .kb-list li:hover, .kb-categories li:hover {
+    background-color: #e9e9e9;
+  }
+  
+  .kb-content {
+    flex: 1;
+    min-height: 500px;
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    padding: 20px;
+  }
+  
+  .kb-panel {
+    display: none;
+  }
+  
+  .kb-panel.active {
+    display: block;
+  }
+  
+  .kb-country-header {
+    margin-bottom: 20px;
+  }
+  
+  .kb-country-header h2 {
+    margin: 0 0 10px 0;
+    color: #0066cc;
+  }
+  
+  .kb-country-description {
+    color: #666;
+    font-size: 16px;
+    margin: 0;
+  }
+  
+  .kb-tabs {
+    display: flex;
+    border-bottom: 1px solid #eaeaea;
+    margin-bottom: 20px;
+  }
+  
+  .kb-tab {
+    padding: 12px 24px;
+    cursor: pointer;
+    font-weight: 500;
+    color: #666;
+    transition: color 0.2s, border-bottom 0.2s;
+  }
+  
+  .kb-tab:hover {
+    color: #0066cc;
+  }
+  
+  .kb-tab.active {
+    color: #0066cc;
+    border-bottom: 3px solid #0066cc;
+  }
+  
+  .kb-tab-content {
+    min-height: 300px;
+  }
+  
+  /* Style des sections d'aperçu */
+  .kb-overview-section {
+    margin-bottom: 30px;
+  }
+  
+  .kb-overview-section h3 {
+    color: #0066cc;
+    margin-bottom: 15px;
+    font-size: 18px;
+  }
+  
+  .kb-cost-of-living {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+  }
+  
+  .kb-cost-item {
+    background-color: #f9f9f9;
+    padding: 15px;
+    border-radius: 8px;
+    width: calc(33.33% - 14px);
+    min-width: 150px;
+  }
+  
+  .kb-cost-item h4 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    color: #333;
+  }
+  
+  .kb-cost-value {
+    font-size: 20px;
+    font-weight: bold;
+    color: #0066cc;
+    margin: 0;
+  }
+  
+  .kb-cost-range {
+    color: #666;
+    margin: 5px 0 0 0;
+    font-size: 14px;
+  }
+  
+  .kb-key-points {
+    margin: 0;
+    padding-left: 20px;
+  }
+  
+  .kb-key-points li {
+    margin-bottom: 8px;
+  }
+  
+  /* Style des sections visa */
+  .kb-visa-section {
+    margin-bottom: 30px;
+  }
+  
+  .kb-visa-section h3 {
+    color: #0066cc;
+    margin-bottom: 15px;
+    font-size: 18px;
+  }
+  
+  .kb-visa-types, .kb-visa-requirements {
+    padding-left: 20px;
+  }
+  
+  .kb-visa-types li, .kb-visa-requirements li {
+    margin-bottom: 8px;
+  }
+  
+  .kb-visa-info {
+    background-color: #f9f9f9;
+    padding: 15px;
+    border-radius: 8px;
+  }
+  
+  /* Style des templates */
+  .kb-templates-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 20px;
+  }
+  
+  .kb-template-item {
+    background-color: #f9f9f9;
+    border-radius: 8px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .kb-template-item h4 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    color: #0066cc;
+  }
+  
+  .kb-template-item p {
+    flex: 1;
+    margin-bottom: 15px;
+    color: #666;
+    font-size: 14px;
+  }
+  
+  .kb-template-tags {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+  }
+  
+  .kb-template-type, .kb-template-format {
+    background-color: #e6e6e6;
+    padding: 5px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    color: #666;
+  }
+  
+  .kb-template-download {
+    background-color: #0066cc;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.2s;
+  }
+  
+  .kb-template-download:hover {
+    background-color: #0055aa;
+  }
+  
+  /* Style de l'accordéon FAQ */
+  .kb-accordion {
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  
+  .kb-accordion-item {
+    margin-bottom: 10px;
+  }
+  
+  .kb-accordion-header {
+    background-color: #f2f2f2;
+    padding: 15px;
+    cursor: pointer;
+    font-weight: 500;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+    position: relative;
+  }
+  
+  .kb-accordion-header:hover {
+    background-color: #e9e9e9;
+  }
+  
+  .kb-accordion-header::after {
+    content: '+';
+    position: absolute;
+    right: 15px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 20px;
+    color: #0066cc;
+  }
+  
+  .kb-accordion-header.active::after {
+    content: '-';
+  }
+  
+  .kb-accordion-content {
+    padding: 0 15px;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out;
+    background-color: #fafafa;
+    border-radius: 0 0 4px 4px;
+  }
+  
+  .kb-faq-categories {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 10px;
+    margin-bottom: 15px;
+  }
+  
+  .kb-faq-category {
+    background-color: #e6e6e6;
+    padding: 3px 8px;
+    border-radius: 20px;
+    font-size: 12px;
+    color: #666;
+  }
+  
+  /* Style des résultats de recherche */
+  .kb-results {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+  }
+  
+  .kb-result-item {
+    background-color: #f9f9f9;
+    padding: 15px;
+    border-radius: 8px;
+    position: relative;
+  }
+  
+  .kb-result-item h3 {
+    margin-top: 0;
+    margin-bottom: 10px;
+    color: #0066cc;
+    font-size: 16px;
+  }
+  
+  .kb-result-item p {
+    margin-bottom: 40px;
+    color: #666;
+    font-size: 14px;
+  }
+  
+  .kb-result-type {
+    position: absolute;
+    bottom: 15px;
+    left: 15px;
+    background-color: #e6e6e6;
+    padding: 3px 8px;
+    border-radius: 20px;
+    font-size: 12px;
+    color: #666;
+  }
+  
+  .kb-view-country, .kb-view-template, .kb-view-faq {
+    position: absolute;
+    bottom: 15px;
+    right: 15px;
+    background-color: #0066cc;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background-color 0.2s;
+  }
+  
+  .kb-view-country:hover, .kb-view-template:hover, .kb-view-faq:hover {
+    background-color: #0055aa;
+  }
+  
+  /* Style responsive */
+  @media (max-width: 768px) {
+    .kb-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    
+    .kb-search {
+      width: 100%;
+      margin-top: 15px;
+    }
+    
+    .kb-main {
+      flex-direction: column;
+    }
+    
+    .kb-sidebar {
+      width: 100%;
+    }
+    
+    .kb-tabs {
+      flex-wrap: wrap;
+    }
+    
+    .kb-tab {
+      padding: 10px 15px;
+      min-width: 90px;
+      text-align: center;
+    }
+    
+    .kb-cost-item {
+      width: 100%;
+    }
+    
+    .kb-templates-list {
+      grid-template-columns: 1fr;
+    }
+  }
+`;
+
+// Injecter les styles dans le document
+function injectStyles() {
+  if (typeof document !== 'undefined') {
+    const styleElement = document.createElement('style');
+    styleElement.textContent = styles;
+    document.head.appendChild(styleElement);
+  }
+}
+
+// Initialiser la base de connaissances si nous sommes dans un navigateur
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', () => {
+    injectStyles();
+    initializeKnowledgeBase();
+  });
+}
+
+// Exportation pour utilisation modulaire
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    KnowledgeBase,
+    SearchIndex,
+    KnowledgeBaseAPI,
+    KnowledgeBaseUI,
+    initializeKnowledgeBase
+  };
+}
