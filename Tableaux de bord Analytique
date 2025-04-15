@@ -1,0 +1,1419 @@
+// === DEI-StudyBloom - Module de Tableaux de Bord Analytiques ===
+// Ce module gère les tableaux de bord, KPIs, rapports personnalisables et exports
+
+// Structure de base utilisant le pattern module pour encapsuler les fonctionnalités
+const DEIAnalytics = (function() {
+    // Configuration privée et variables d'état
+    const config = {
+        refreshInterval: 30000, // 30 secondes
+        maxDataPoints: 500,     // Limite de points de données pour les graphiques
+        cacheExpiry: 300000,    // 5 minutes avant expiration du cache
+    };
+    
+    // Cache pour stocker les résultats des requêtes fréquentes
+    let dataCache = {
+        kpis: {},
+        reports: {},
+        lastUpdated: {}
+    };
+    
+    // Stockage des abonnements aux données en temps réel
+    let subscriptions = [];
+    
+    // Définition des métriques principales (KPIs)
+    const KPI_DEFINITIONS = {
+        applicationCompletionRate: {
+            title: "Taux de Complétion des Dossiers",
+            description: "Pourcentage des dossiers complétés par rapport aux dossiers initiés",
+            calculation: (data) => {
+                const completed = data.filter(app => app.status === 'completed').length;
+                return (completed / data.length) * 100;
+            },
+            format: "percentage",
+            threshold: {
+                warning: 50,
+                critical: 30
+            }
+        },
+        averageProcessingTime: {
+            title: "Temps Moyen de Traitement",
+            description: "Durée moyenne entre la soumission et la décision finale (en jours)",
+            calculation: (data) => {
+                const processed = data.filter(app => app.decisionDate && app.submissionDate);
+                if (!processed.length) return 0;
+                
+                const totalDays = processed.reduce((sum, app) => {
+                    const submissionDate = new Date(app.submissionDate);
+                    const decisionDate = new Date(app.decisionDate);
+                    const days = (decisionDate - submissionDate) / (1000 * 60 * 60 * 24);
+                    return sum + days;
+                }, 0);
+                
+                return totalDays / processed.length;
+            },
+            format: "number",
+            precision: 1,
+            threshold: {
+                warning: 14,
+                critical: 21
+            }
+        },
+        acceptanceRate: {
+            title: "Taux d'Acceptation",
+            description: "Pourcentage des dossiers acceptés parmi les dossiers traités",
+            calculation: (data) => {
+                const processed = data.filter(app => app.decision);
+                if (!processed.length) return 0;
+                
+                const accepted = processed.filter(app => app.decision === 'accepted').length;
+                return (accepted / processed.length) * 100;
+            },
+            format: "percentage",
+            threshold: {
+                warning: 40,
+                critical: 25
+            }
+        },
+        countryDistribution: {
+            title: "Distribution par Pays",
+            description: "Répartition des dossiers par pays de destination",
+            calculation: (data) => {
+                const countryCount = {};
+                data.forEach(app => {
+                    if (app.destinationCountry) {
+                        countryCount[app.destinationCountry] = (countryCount[app.destinationCountry] || 0) + 1;
+                    }
+                });
+                return countryCount;
+            },
+            format: "distribution"
+        },
+        documentCompletionTime: {
+            title: "Délai de Complétion des Documents",
+            description: "Temps moyen pour que les étudiants complètent leurs documents requis (en jours)",
+            calculation: (data) => {
+                const withDocs = data.filter(app => app.documentsCompletedDate && app.createdDate);
+                if (!withDocs.length) return 0;
+                
+                const totalDays = withDocs.reduce((sum, app) => {
+                    const startDate = new Date(app.createdDate);
+                    const completionDate = new Date(app.documentsCompletedDate);
+                    const days = (completionDate - startDate) / (1000 * 60 * 60 * 24);
+                    return sum + days;
+                }, 0);
+                
+                return totalDays / withDocs.length;
+            },
+            format: "number",
+            precision: 1,
+            threshold: {
+                warning: 10,
+                critical: 15
+            }
+        }
+    };
+    
+    // === API de récupération des données ===
+    
+    // Fonction principale pour récupérer les données des applications
+    async function fetchApplicationData(filters = {}) {
+        try {
+            // Construction des paramètres de requête
+            const queryParams = new URLSearchParams();
+            Object.keys(filters).forEach(key => {
+                if (filters[key] !== undefined && filters[key] !== null) {
+                    queryParams.append(key, filters[key]);
+                }
+            });
+            
+            const cacheKey = queryParams.toString();
+            
+            // Vérifier si les données sont en cache et encore valides
+            if (dataCache.lastUpdated[cacheKey] && 
+                Date.now() - dataCache.lastUpdated[cacheKey] < config.cacheExpiry) {
+                console.log("Utilisation des données en cache pour: ", cacheKey);
+                return dataCache.reports[cacheKey];
+            }
+            
+            // Récupération des données depuis l'API
+            const response = await fetch(`/api/applications?${queryParams.toString()}`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${getAuthToken()}`
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Erreur API: ${response.status} - ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            
+            // Mise à jour du cache
+            dataCache.reports[cacheKey] = data;
+            dataCache.lastUpdated[cacheKey] = Date.now();
+            
+            return data;
+        } catch (error) {
+            console.error("Erreur lors de la récupération des données:", error);
+            throw error;
+        }
+    }
+    
+    // Récupération des données KPI
+    async function fetchKPIData(kpiName, filters = {}) {
+        if (!KPI_DEFINITIONS[kpiName]) {
+            throw new Error(`KPI non défini: ${kpiName}`);
+        }
+        
+        try {
+            const data = await fetchApplicationData(filters);
+            const kpiDefinition = KPI_DEFINITIONS[kpiName];
+            const result = kpiDefinition.calculation(data);
+            
+            // Mise en cache du résultat calculé
+            const cacheKey = `${kpiName}-${JSON.stringify(filters)}`;
+            dataCache.kpis[cacheKey] = {
+                value: result,
+                timestamp: Date.now()
+            };
+            
+            return {
+                name: kpiName,
+                title: kpiDefinition.title,
+                description: kpiDefinition.description,
+                value: result,
+                format: kpiDefinition.format,
+                threshold: kpiDefinition.threshold,
+                precision: kpiDefinition.precision || 0
+            };
+        } catch (error) {
+            console.error(`Erreur lors du calcul du KPI ${kpiName}:`, error);
+            throw error;
+        }
+    }
+    
+    // Récupération de tous les KPIs
+    async function fetchAllKPIs(filters = {}) {
+        try {
+            const data = await fetchApplicationData(filters);
+            const results = {};
+            
+            for (const [kpiName, kpiDefinition] of Object.entries(KPI_DEFINITIONS)) {
+                results[kpiName] = {
+                    name: kpiName,
+                    title: kpiDefinition.title,
+                    description: kpiDefinition.description,
+                    value: kpiDefinition.calculation(data),
+                    format: kpiDefinition.format,
+                    threshold: kpiDefinition.threshold,
+                    precision: kpiDefinition.precision || 0
+                };
+            }
+            
+            return results;
+        } catch (error) {
+            console.error("Erreur lors de la récupération de tous les KPIs:", error);
+            throw error;
+        }
+    }
+    
+    // === Système de rapports personnalisables ===
+    
+    // Générateur de rapports personnalisés
+    async function generateCustomReport(config) {
+        try {
+            // Validation de la configuration
+            if (!config.metrics || !Array.isArray(config.metrics) || config.metrics.length === 0) {
+                throw new Error("Configuration de rapport invalide: les métriques sont requises");
+            }
+            
+            // Récupération des données
+            const data = await fetchApplicationData(config.filters || {});
+            
+            // Construction du rapport
+            const report = {
+                title: config.title || "Rapport personnalisé",
+                generatedAt: new Date().toISOString(),
+                filters: config.filters || {},
+                metrics: {}
+            };
+            
+            // Calcul de chaque métrique demandée
+            for (const metricName of config.metrics) {
+                if (KPI_DEFINITIONS[metricName]) {
+                    const kpiDefinition = KPI_DEFINITIONS[metricName];
+                    report.metrics[metricName] = {
+                        title: kpiDefinition.title,
+                        description: kpiDefinition.description,
+                        value: kpiDefinition.calculation(data),
+                        format: kpiDefinition.format
+                    };
+                }
+            }
+            
+            // Ajouter des analyses temporelles si demandées
+            if (config.timeSeries) {
+                report.timeSeries = await generateTimeSeriesData(
+                    config.timeSeries.metrics || config.metrics,
+                    config.timeSeries.interval || 'month',
+                    config.timeSeries.range || 12,
+                    config.filters || {}
+                );
+            }
+            
+            return report;
+        } catch (error) {
+            console.error("Erreur lors de la génération du rapport personnalisé:", error);
+            throw error;
+        }
+    }
+    
+    // Génération des données de séries temporelles
+    async function generateTimeSeriesData(metrics, interval = 'month', range = 12, filters = {}) {
+        try {
+            // Configuration des intervalles
+            const intervals = {
+                day: { unit: 'day', format: 'YYYY-MM-DD' },
+                week: { unit: 'week', format: 'YYYY-[W]WW' },
+                month: { unit: 'month', format: 'YYYY-MM' },
+                quarter: { unit: 'quarter', format: 'YYYY-[Q]Q' },
+                year: { unit: 'year', format: 'YYYY' }
+            };
+            
+            if (!intervals[interval]) {
+                throw new Error(`Intervalle non supporté: ${interval}`);
+            }
+            
+            // Calcul des dates de début et fin
+            const endDate = new Date();
+            const startDate = new Date();
+            
+            switch (interval) {
+                case 'day':
+                    startDate.setDate(endDate.getDate() - range);
+                    break;
+                case 'week':
+                    startDate.setDate(endDate.getDate() - (range * 7));
+                    break;
+                case 'month':
+                    startDate.setMonth(endDate.getMonth() - range);
+                    break;
+                case 'quarter':
+                    startDate.setMonth(endDate.getMonth() - (range * 3));
+                    break;
+                case 'year':
+                    startDate.setFullYear(endDate.getFullYear() - range);
+                    break;
+            }
+            
+            // Ajout des filtres de date
+            const timeFilters = {
+                ...filters,
+                startDate: startDate.toISOString(),
+                endDate: endDate.toISOString()
+            };
+            
+            // Récupération des données
+            const data = await fetchApplicationData(timeFilters);
+            
+            // Traitement des données par période
+            const timeSeriesData = {};
+            
+            // Initialiser les séries temporelles pour chaque métrique
+            metrics.forEach(metric => {
+                if (KPI_DEFINITIONS[metric]) {
+                    timeSeriesData[metric] = [];
+                }
+            });
+            
+            // Grouper les données par période
+            const groupedData = groupDataByTimePeriod(data, interval);
+            
+            // Calculer les métriques pour chaque période
+            for (const [period, periodData] of Object.entries(groupedData)) {
+                metrics.forEach(metric => {
+                    if (KPI_DEFINITIONS[metric]) {
+                        const value = KPI_DEFINITIONS[metric].calculation(periodData);
+                        timeSeriesData[metric].push({
+                            period,
+                            value
+                        });
+                    }
+                });
+            }
+            
+            return timeSeriesData;
+        } catch (error) {
+            console.error("Erreur lors de la génération des données de séries temporelles:", error);
+            throw error;
+        }
+    }
+    
+    // Regroupement des données par période de temps
+    function groupDataByTimePeriod(data, interval) {
+        const grouped = {};
+        const formatters = {
+            day: (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`,
+            week: (date) => {
+                const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
+                const pastDaysOfYear = (date - firstDayOfYear) / 86400000;
+                const weekNum = Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
+                return `${date.getFullYear()}-W${String(weekNum).padStart(2, '0')}`;
+            },
+            month: (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`,
+            quarter: (date) => {
+                const quarter = Math.floor(date.getMonth() / 3) + 1;
+                return `${date.getFullYear()}-Q${quarter}`;
+            },
+            year: (date) => `${date.getFullYear()}`
+        };
+        
+        data.forEach(item => {
+            // Utiliser la date de création comme référence temporelle
+            const date = new Date(item.createdDate);
+            const periodKey = formatters[interval](date);
+            
+            if (!grouped[periodKey]) {
+                grouped[periodKey] = [];
+            }
+            
+            grouped[periodKey].push(item);
+        });
+        
+        return grouped;
+    }
+    
+    // === Export de données ===
+    
+    // Export au format CSV
+    function exportToCSV(data, filename = 'export.csv') {
+        try {
+            if (!data || !data.length) {
+                throw new Error("Aucune donnée à exporter");
+            }
+            
+            // Extraction des en-têtes (à partir des clés du premier objet)
+            const headers = Object.keys(data[0]);
+            
+            // Construction des lignes CSV
+            let csvContent = headers.join(',') + '\n';
+            
+            data.forEach(item => {
+                const values = headers.map(header => {
+                    const value = item[header];
+                    // Échapper les valeurs contenant des virgules ou des guillemets
+                    if (value === null || value === undefined) {
+                        return '';
+                    } else if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
+                        return `"${value.replace(/"/g, '""')}"`;
+                    } else if (typeof value === 'object') {
+                        return `"${JSON.stringify(value).replace(/"/g, '""')}"`;
+                    }
+                    return value;
+                });
+                
+                csvContent += values.join(',') + '\n';
+            });
+            
+            // Création du fichier à télécharger
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            
+            // Support des navigateurs modernes
+            if (navigator.msSaveBlob) {
+                // Pour IE
+                navigator.msSaveBlob(blob, filename);
+            } else {
+                // Pour les autres navigateurs
+                const url = URL.createObjectURL(blob);
+                link.href = url;
+                link.setAttribute('download', filename);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+            }
+            
+            return true;
+        } catch (error) {
+            console.error("Erreur lors de l'export CSV:", error);
+            throw error;
+        }
+    }
+    
+    // Export au format Excel (XLSX)
+    async function exportToExcel(data, options = {}) {
+        try {
+            if (!data) {
+                throw new Error("Aucune donnée à exporter");
+            }
+            
+            // Import dynamique de la bibliothèque xlsx
+            const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx/+esm');
+            
+            // Préparation des options
+            const filename = options.filename || 'export.xlsx';
+            const sheetName = options.sheetName || 'Données';
+            
+            // Création du workbook
+            const wb = XLSX.utils.book_new();
+            
+            // Ajout des données
+            if (Array.isArray(data)) {
+                // Cas d'un tableau simple
+                const ws = XLSX.utils.json_to_sheet(data);
+                XLSX.utils.book_append_sheet(wb, ws, sheetName);
+            } else if (typeof data === 'object') {
+                // Cas de plusieurs feuilles
+                for (const [key, sheetData] of Object.entries(data)) {
+                    if (Array.isArray(sheetData)) {
+                        const ws = XLSX.utils.json_to_sheet(sheetData);
+                        XLSX.utils.book_append_sheet(wb, ws, key);
+                    }
+                }
+            }
+            
+            // Génération et téléchargement du fichier
+            XLSX.writeFile(wb, filename);
+            
+            return true;
+        } catch (error) {
+            console.error("Erreur lors de l'export Excel:", error);
+            throw error;
+        }
+    }
+    
+    // Export d'un rapport au format PDF
+    async function exportToPDF(reportData, options = {}) {
+        try {
+            // Import dynamique de la bibliothèque jspdf
+            const { jsPDF } = await import('https://cdn.jsdelivr.net/npm/jspdf/+esm');
+            const autoTable = await import('https://cdn.jsdelivr.net/npm/jspdf-autotable/+esm');
+            
+            const filename = options.filename || 'rapport.pdf';
+            const title = options.title || reportData.title || 'Rapport';
+            
+            // Création du document PDF
+            const doc = new jsPDF({
+                orientation: options.orientation || 'portrait',
+                unit: 'mm',
+                format: options.format || 'a4'
+            });
+            
+            // Ajout du titre
+            doc.setFontSize(18);
+            doc.text(title, 14, 20);
+            
+            // Ajout de la date de génération
+            doc.setFontSize(10);
+            doc.text(`Généré le ${new Date().toLocaleDateString()} à ${new Date().toLocaleTimeString()}`, 14, 30);
+            
+            let yPosition = 40;
+            
+            // Ajout des filtres si présents
+            if (reportData.filters && Object.keys(reportData.filters).length > 0) {
+                doc.setFontSize(12);
+                doc.text('Filtres appliqués:', 14, yPosition);
+                yPosition += 6;
+                
+                doc.setFontSize(10);
+                for (const [key, value] of Object.entries(reportData.filters)) {
+                    doc.text(`${key}: ${value}`, 20, yPosition);
+                    yPosition += 5;
+                }
+                
+                yPosition += 5;
+            }
+            
+            // Ajout des métriques
+            if (reportData.metrics && Object.keys(reportData.metrics).length > 0) {
+                doc.setFontSize(14);
+                doc.text('Métriques clés', 14, yPosition);
+                yPosition += 10;
+                
+                // Création d'un tableau pour les métriques
+                const metricsData = Object.entries(reportData.metrics).map(([key, metric]) => {
+                    let formattedValue = metric.value;
+                    if (metric.format === 'percentage') {
+                        formattedValue = `${metric.value.toFixed(1)}%`;
+                    } else if (metric.format === 'number') {
+                        formattedValue = metric.value.toFixed(metric.precision || 0);
+                    } else if (metric.format === 'distribution' && typeof metric.value === 'object') {
+                        formattedValue = Object.entries(metric.value)
+                            .map(([k, v]) => `${k}: ${v}`)
+                            .join(', ');
+                    }
+                    
+                    return [metric.title, metric.description, formattedValue];
+                });
+                
+                doc.autoTable({
+                    startY: yPosition,
+                    head: [['Métrique', 'Description', 'Valeur']],
+                    body: metricsData,
+                    margin: { top: 10 }
+                });
+                
+                yPosition = doc.lastAutoTable.finalY + 10;
+            }
+            
+            // Ajout des graphiques si présents
+            if (reportData.timeSeries && Object.keys(reportData.timeSeries).length > 0) {
+                doc.setFontSize(14);
+                doc.text('Analyse temporelle', 14, yPosition);
+                yPosition += 10;
+                
+                // Pour chaque métrique temporelle, créer un tableau
+                for (const [metric, data] of Object.entries(reportData.timeSeries)) {
+                    if (data.length > 0) {
+                        doc.setFontSize(12);
+                        doc.text(KPI_DEFINITIONS[metric]?.title || metric, 14, yPosition);
+                        yPosition += 5;
+                        
+                        const tableData = data.map(item => [item.period, formatMetricValue(item.value, KPI_DEFINITIONS[metric]?.format)]);
+                        
+                        doc.autoTable({
+                            startY: yPosition,
+                            head: [['Période', 'Valeur']],
+                            body: tableData,
+                            margin: { top: 5 }
+                        });
+                        
+                        yPosition = doc.lastAutoTable.finalY + 10;
+                        
+                        // Ajouter une page si nécessaire
+                        if (yPosition > 270) {
+                            doc.addPage();
+                            yPosition = 20;
+                        }
+                    }
+                }
+            }
+            
+            // Enregistrement du PDF
+            doc.save(filename);
+            
+            return true;
+        } catch (error) {
+            console.error("Erreur lors de l'export PDF:", error);
+            throw error;
+        }
+    }
+    
+    // Formatage des valeurs métriques
+    function formatMetricValue(value, format) {
+        if (format === 'percentage') {
+            return `${value.toFixed(1)}%`;
+        } else if (format === 'number') {
+            return value.toFixed(1);
+        } else if (format === 'distribution' && typeof value === 'object') {
+            return Object.entries(value)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(', ');
+        }
+        return value;
+    }
+    
+    // === Utilitaires ===
+    
+    // Récupération du token d'authentification
+    function getAuthToken() {
+        return localStorage.getItem('authToken') || sessionStorage.getItem('authToken');
+    }
+    
+    // Abonnement aux mises à jour en temps réel
+    function subscribeToUpdates(kpiName, callback, interval = config.refreshInterval) {
+        const subscriptionId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+        
+        const subscription = {
+            id: subscriptionId,
+            kpiName,
+            callback,
+            interval,
+            timerId: setInterval(async () => {
+                try {
+                    const kpiData = await fetchKPIData(kpiName);
+                    callback(kpiData);
+                } catch (error) {
+                    console.error(`Erreur lors de la mise à jour du KPI ${kpiName}:`, error);
+                }
+            }, interval)
+        };
+        
+        subscriptions.push(subscription);
+        return subscriptionId;
+    }
+    
+    // Désinscription des mises à jour
+    function unsubscribe(subscriptionId) {
+        const index = subscriptions.findIndex(sub => sub.id === subscriptionId);
+        if (index !== -1) {
+            clearInterval(subscriptions[index].timerId);
+            subscriptions.splice(index, 1);
+            return true;
+        }
+        return false;
+    }
+    
+    // Nettoyage du cache
+    function clearCache() {
+        dataCache.kpis = {};
+        dataCache.reports = {};
+        dataCache.lastUpdated = {};
+        console.log("Cache de données effacé");
+    }
+    
+    // === Interface publique ===
+    return {
+        // KPIs et statistiques
+        getKPI: fetchKPIData,
+        getAllKPIs: fetchAllKPIs,
+        KPI_DEFINITIONS,
+        
+        // Rapports personnalisables
+        generateReport: generateCustomReport,
+        getTimeSeriesData: generateTimeSeriesData,
+        
+        // Exports de données
+        exportCSV: exportToCSV,
+        exportExcel: exportToExcel,
+        exportPDF: exportToPDF,
+        
+        // Abonnements et mises à jour
+        subscribe: subscribeToUpdates,
+        unsubscribe: unsubscribe,
+        
+        // Configuration et maintenance
+        setConfig: (newConfig) => {
+            Object.assign(config, newConfig);
+        },
+        clearCache: clearCache,
+        
+        // Raccourcis pour les données
+        fetchData: fetchApplicationData
+    };
+})();
+
+// === Exemples d'utilisation ===
+
+// Chargement initial du tableau de bord
+async function initDashboard() {
+    try {
+        // Récupération de tous les KPIs
+        const allKPIs = await DEIAnalytics.getAllKPIs();
+        renderKPIs(allKPIs);
+        
+        // Configuration pour un rapport personnalisé
+        const reportConfig = {
+            title: "Rapport mensuel de performances",
+            filters: {
+                startDate: getFirstDayOfMonth(),
+                endDate: new Date().toISOString()
+            },
+            metrics: [
+                'applicationCompletionRate',
+                'averageProcessingTime',
+                'acceptanceRate'
+            ],
+            timeSeries: {
+                interval: 'month',
+                range: 6
+            }
+        };
+        
+        // Génération du rapport
+        const report = await DEIAnalytics.generateReport(reportConfig);
+        renderReport(report);
+        
+        // Ajout des écouteurs d'événements pour les exports
+        setupExportListeners();
+        
+    } catch (error) {
+        console.error("Erreur d'initialisation du tableau de bord:", error);
+        showErrorMessage("Impossible de charger le tableau de bord. Veuillez réessayer plus tard.");
+    }
+}
+
+// Rendu des KPIs dans l'interface
+function renderKPIs(kpis) {
+    const kpiContainer = document.getElementById('kpi-container');
+    if (!kpiContainer) return;
+    
+    kpiContainer.innerHTML = '';
+    
+    for (const [kpiName, kpiData] of Object.entries(kpis)) {
+        // Formater la valeur selon le type
+        let formattedValue = kpiData.value;
+        if (kpiData.format === 'percentage') {
+            formattedValue = `${kpiData.value.toFixed(1)}%`;
+        } else if (kpiData.format === 'number') {
+            formattedValue = kpiData.value.toFixed(kpiData.precision || 0);
+        }
+        
+        // Déterminer la classe de couleur basée sur les seuils
+        let statusClass = 'status-normal';
+        if (kpiData.threshold) {
+            if (kpiData.format === 'percentage' || kpiData.format === 'number') {
+                if (kpiData.value <= kpiData.threshold.critical) {
+                    statusClass = 'status-critical';
+                } else if (kpiData.value <= kpiData.threshold.warning) {
+                    statusClass = 'status-warning';
+                }
+            }
+        }
+        
+        // Créer l'élément KPI
+        const kpiElement = document.createElement('div');
+        kpiElement.className = `kpi-card ${statusClass}`;
+        kpiElement.innerHTML = `
+            <h3 class="kpi-title">${kpiData.title}</h3>
+            <div class="kpi-value">${formattedValue}</div>
+            <div class="kpi-description">${kpiData.description}</div>
+        `;
+        
+        kpiContainer.appendChild(kpiElement);
+        
+        // Abonnement aux mises à jour pour ce KPI
+        if (kpiName !== 'countryDistribution') { // Exclure les distributions complexes
+            DEIAnalytics.subscribe(kpiName, updatedKpi => {
+                const valueElement = kpiElement.querySelector('.kpi-value');
+                if (valueElement) {
+                    let newFormattedValue = updatedKpi.value;
+                    if (updatedKpi.format === 'percentage') {
+                        newFormattedValue = `${updatedKpi.value.toFixed(1)}%`;
+                    } else if (updatedKpi.format === 'number') {
+                        newFormattedValue = updatedKpi.value.toFixed(updatedKpi.precision || 0);
+                    }
+                    valueElement.textContent = newFormattedValue;
+                    
+                    // Mise à jour de la classe de statut
+                    kpiElement.className = kpiElement.className.replace(/status-\w+/, '');
+                    if (updatedKpi.threshold) {
+                        if (updatedKpi.value <= updatedKpi.threshold.critical) {
+                            kpiElement.classList.add('status-critical');
+                        } else if (updatedKpi.value <= updatedKpi.threshold.critical) {
+                            kpiElement.classList.add('status-critical');
+                        } else if (updatedKpi.value <= updatedKpi.threshold.warning) {
+                            kpiElement.classList.add('status-warning');
+                        } else {
+                            kpiElement.classList.add('status-normal');
+                        }
+                    }
+                }
+            });
+        }
+    }
+    
+    // Rendu spécial pour la distribution par pays
+    if (kpis.countryDistribution && kpis.countryDistribution.value) {
+        renderCountryDistribution(kpis.countryDistribution.value);
+    }
+}
+
+// Rendu de la distribution par pays
+function renderCountryDistribution(countryData) {
+    const chartContainer = document.getElementById('country-distribution-chart');
+    if (!chartContainer) return;
+    
+    // Préparation des données pour le graphique
+    const countries = Object.keys(countryData);
+    const counts = Object.values(countryData);
+    
+    // Utilisation de la bibliothèque Chart.js
+    const ctx = chartContainer.getContext('2d');
+    
+    // Destruction du graphique existant s'il y en a un
+    if (chartContainer.chart) {
+        chartContainer.chart.destroy();
+    }
+    
+    // Création du nouveau graphique
+    chartContainer.chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: countries,
+            datasets: [{
+                label: 'Nombre de dossiers',
+                data: counts,
+                backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                borderColor: 'rgba(54, 162, 235, 1)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Nombre de dossiers'
+                    }
+                },
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Pays de destination'
+                    }
+                }
+            },
+            plugins: {
+                title: {
+                    display: true,
+                    text: 'Distribution des dossiers par pays'
+                },
+                legend: {
+                    display: false
+                }
+            }
+        }
+    });
+}
+
+// Rendu d'un rapport personnalisé
+function renderReport(report) {
+    const reportContainer = document.getElementById('custom-report-container');
+    if (!reportContainer) return;
+    
+    // Titre et informations du rapport
+    reportContainer.innerHTML = `
+        <div class="report-header">
+            <h2>${report.title}</h2>
+            <p class="report-date">Généré le ${new Date(report.generatedAt).toLocaleDateString()} à ${new Date(report.generatedAt).toLocaleTimeString()}</p>
+        </div>
+    `;
+    
+    // Section des filtres
+    if (report.filters && Object.keys(report.filters).length > 0) {
+        const filtersSection = document.createElement('div');
+        filtersSection.className = 'report-filters';
+        
+        let filtersHtml = '<h3>Filtres appliqués</h3><ul>';
+        for (const [key, value] of Object.entries(report.filters)) {
+            let displayValue = value;
+            if (key.includes('Date') && value) {
+                displayValue = new Date(value).toLocaleDateString();
+            }
+            filtersHtml += `<li><strong>${formatFilterName(key)}:</strong> ${displayValue}</li>`;
+        }
+        filtersHtml += '</ul>';
+        
+        filtersSection.innerHTML = filtersHtml;
+        reportContainer.appendChild(filtersSection);
+    }
+    
+    // Section des métriques
+    if (report.metrics && Object.keys(report.metrics).length > 0) {
+        const metricsSection = document.createElement('div');
+        metricsSection.className = 'report-metrics';
+        metricsSection.innerHTML = '<h3>Métriques clés</h3>';
+        
+        const metricsTable = document.createElement('table');
+        metricsTable.className = 'metrics-table';
+        metricsTable.innerHTML = `
+            <thead>
+                <tr>
+                    <th>Métrique</th>
+                    <th>Description</th>
+                    <th>Valeur</th>
+                </tr>
+            </thead>
+            <tbody>
+            </tbody>
+        `;
+        
+        const tableBody = metricsTable.querySelector('tbody');
+        
+        for (const [key, metric] of Object.entries(report.metrics)) {
+            let formattedValue = metric.value;
+            if (metric.format === 'percentage') {
+                formattedValue = `${metric.value.toFixed(1)}%`;
+            } else if (metric.format === 'number') {
+                formattedValue = metric.value.toFixed(1);
+            } else if (metric.format === 'distribution' && typeof metric.value === 'object') {
+                formattedValue = Object.entries(metric.value)
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join(', ');
+            }
+            
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${metric.title}</td>
+                <td>${metric.description}</td>
+                <td class="metric-value">${formattedValue}</td>
+            `;
+            
+            tableBody.appendChild(row);
+        }
+        
+        metricsSection.appendChild(metricsTable);
+        reportContainer.appendChild(metricsSection);
+    }
+    
+    // Graphiques de séries temporelles
+    if (report.timeSeries && Object.keys(report.timeSeries).length > 0) {
+        const timeSeriesSection = document.createElement('div');
+        timeSeriesSection.className = 'report-time-series';
+        timeSeriesSection.innerHTML = '<h3>Analyse temporelle</h3>';
+        
+        for (const [metric, data] of Object.entries(report.timeSeries)) {
+            if (data.length > 0) {
+                const chartContainer = document.createElement('div');
+                chartContainer.className = 'chart-container';
+                chartContainer.innerHTML = `
+                    <h4>${DEIAnalytics.KPI_DEFINITIONS[metric]?.title || metric}</h4>
+                    <canvas id="chart-${metric}"></canvas>
+                `;
+                
+                timeSeriesSection.appendChild(chartContainer);
+                
+                // Attendre que le DOM soit mis à jour
+                setTimeout(() => {
+                    const canvas = document.getElementById(`chart-${metric}`);
+                    if (canvas) {
+                        renderTimeSeriesChart(canvas, data, DEIAnalytics.KPI_DEFINITIONS[metric]);
+                    }
+                }, 0);
+            }
+        }
+        
+        reportContainer.appendChild(timeSeriesSection);
+    }
+    
+    // Boutons d'exportation
+    const exportSection = document.createElement('div');
+    exportSection.className = 'report-export-buttons';
+    exportSection.innerHTML = `
+        <button id="export-csv" class="btn btn-primary">Exporter en CSV</button>
+        <button id="export-excel" class="btn btn-success">Exporter en Excel</button>
+        <button id="export-pdf" class="btn btn-danger">Exporter en PDF</button>
+    `;
+    
+    reportContainer.appendChild(exportSection);
+    
+    // Sauvegarde du rapport dans une variable globale pour les exports
+    window.currentReport = report;
+}
+
+// Rendu d'un graphique de séries temporelles
+function renderTimeSeriesChart(canvas, data, kpiDefinition) {
+    const ctx = canvas.getContext('2d');
+    
+    // Préparation des données
+    const periods = data.map(item => item.period);
+    const values = data.map(item => item.value);
+    
+    // Configuration du graphique
+    const chartConfig = {
+        type: 'line',
+        data: {
+            labels: periods,
+            datasets: [{
+                label: kpiDefinition?.title || 'Valeur',
+                data: values,
+                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                borderColor: 'rgba(75, 192, 192, 1)',
+                borderWidth: 2,
+                pointBackgroundColor: 'rgba(75, 192, 192, 1)',
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: false,
+                    title: {
+                        display: true,
+                        text: kpiDefinition?.format === 'percentage' ? 'Pourcentage (%)' : 'Valeur'
+                    }
+                },
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Période'
+                    }
+                }
+            },
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let value = context.raw;
+                            if (kpiDefinition?.format === 'percentage') {
+                                return `${value.toFixed(1)}%`;
+                            } else if (kpiDefinition?.format === 'number') {
+                                return value.toFixed(1);
+                            }
+                            return value;
+                        }
+                    }
+                }
+            }
+        }
+    };
+    
+    // Création du graphique
+    new Chart(ctx, chartConfig);
+}
+
+// Configuration des écouteurs d'événements pour les exports
+function setupExportListeners() {
+    // Export CSV
+    document.getElementById('export-csv')?.addEventListener('click', async () => {
+        try {
+            if (!window.currentReport) {
+                showErrorMessage("Aucun rapport à exporter");
+                return;
+            }
+            
+            // Récupération des données brutes
+            const data = await DEIAnalytics.fetchData(window.currentReport.filters);
+            
+            // Export
+            DEIAnalytics.exportCSV(data, 'dei-studybloom-export.csv');
+            
+            showSuccessMessage("Export CSV réussi");
+        } catch (error) {
+            console.error("Erreur lors de l'export CSV:", error);
+            showErrorMessage("Erreur lors de l'export CSV");
+        }
+    });
+    
+    // Export Excel
+    document.getElementById('export-excel')?.addEventListener('click', async () => {
+        try {
+            if (!window.currentReport) {
+                showErrorMessage("Aucun rapport à exporter");
+                return;
+            }
+            
+            // Préparation des données pour Excel
+            const rawData = await DEIAnalytics.fetchData(window.currentReport.filters);
+            
+            // Structuration des données par feuille
+            const excelData = {
+                'Données brutes': rawData,
+                'Métriques': Object.entries(window.currentReport.metrics).map(([key, metric]) => ({
+                    Métrique: metric.title,
+                    Description: metric.description,
+                    Valeur: metric.value,
+                    Format: metric.format
+                }))
+            };
+            
+            // Ajout des données temporelles si présentes
+            if (window.currentReport.timeSeries) {
+                for (const [metric, data] of Object.entries(window.currentReport.timeSeries)) {
+                    if (data.length > 0) {
+                        excelData[`Série temporelle - ${DEIAnalytics.KPI_DEFINITIONS[metric]?.title || metric}`] = data;
+                    }
+                }
+            }
+            
+            // Export
+            DEIAnalytics.exportExcel(excelData, {
+                filename: 'dei-studybloom-rapport.xlsx',
+                sheetName: 'Rapport'
+            });
+            
+            showSuccessMessage("Export Excel réussi");
+        } catch (error) {
+            console.error("Erreur lors de l'export Excel:", error);
+            showErrorMessage("Erreur lors de l'export Excel");
+        }
+    });
+    
+    // Export PDF
+    document.getElementById('export-pdf')?.addEventListener('click', async () => {
+        try {
+            if (!window.currentReport) {
+                showErrorMessage("Aucun rapport à exporter");
+                return;
+            }
+            
+            // Export du rapport actuel
+            DEIAnalytics.exportPDF(window.currentReport, {
+                filename: 'dei-studybloom-rapport.pdf',
+                title: window.currentReport.title
+            });
+            
+            showSuccessMessage("Export PDF réussi");
+        } catch (error) {
+            console.error("Erreur lors de l'export PDF:", error);
+            showErrorMessage("Erreur lors de l'export PDF");
+        }
+    });
+}
+
+// === Utilitaires d'interface ===
+
+// Affichage des messages d'erreur
+function showErrorMessage(message) {
+    const alertContainer = document.getElementById('alert-container');
+    if (!alertContainer) return;
+    
+    const alertElement = document.createElement('div');
+    alertElement.className = 'alert alert-danger';
+    alertElement.innerHTML = `
+        <strong>Erreur!</strong> ${message}
+        <button type="button" class="close" data-dismiss="alert">&times;</button>
+    `;
+    
+    alertContainer.appendChild(alertElement);
+    
+    // Auto-suppression après 5 secondes
+    setTimeout(() => {
+        if (alertElement.parentNode === alertContainer) {
+            alertContainer.removeChild(alertElement);
+        }
+    }, 5000);
+}
+
+// Affichage des messages de succès
+function showSuccessMessage(message) {
+    const alertContainer = document.getElementById('alert-container');
+    if (!alertContainer) return;
+    
+    const alertElement = document.createElement('div');
+    alertElement.className = 'alert alert-success';
+    alertElement.innerHTML = `
+        <strong>Succès!</strong> ${message}
+        <button type="button" class="close" data-dismiss="alert">&times;</button>
+    `;
+    
+    alertContainer.appendChild(alertElement);
+    
+    // Auto-suppression après 3 secondes
+    setTimeout(() => {
+        if (alertElement.parentNode === alertContainer) {
+            alertContainer.removeChild(alertElement);
+        }
+    }, 3000);
+}
+
+// Formater les noms de filtres pour l'affichage
+function formatFilterName(key) {
+    const formatMap = {
+        'startDate': 'Date de début',
+        'endDate': 'Date de fin',
+        'status': 'Statut',
+        'destinationCountry': 'Pays de destination',
+        'programType': 'Type de programme',
+        'studentId': 'ID étudiant'
+    };
+    
+    return formatMap[key] || key.replace(/([A-Z])/g, ' $1').trim();
+}
+
+// Obtenir le premier jour du mois actuel
+function getFirstDayOfMonth() {
+    const date = new Date();
+    date.setDate(1);
+    date.setHours(0, 0, 0, 0);
+    return date.toISOString();
+}
+
+// === Initialisation et configuration du tableau de bord ===
+
+// Initialisation des filtres dynamiques
+function initFilters() {
+    const filterForm = document.getElementById('dashboard-filters');
+    if (!filterForm) return;
+    
+    // Gestionnaire d'événements pour le formulaire de filtres
+    filterForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        
+        // Récupération des valeurs des filtres
+        const filters = {
+            startDate: document.getElementById('filter-start-date')?.value,
+            endDate: document.getElementById('filter-end-date')?.value,
+            status: document.getElementById('filter-status')?.value,
+            destinationCountry: document.getElementById('filter-country')?.value,
+            programType: document.getElementById('filter-program')?.value
+        };
+        
+        // Nettoyage des filtres vides
+        Object.keys(filters).forEach(key => {
+            if (!filters[key] || filters[key] === 'all') {
+                delete filters[key];
+            } else if (key.includes('Date')) {
+                filters[key] += 'T00:00:00.000Z';
+            }
+        });
+        
+        try {
+            // Mise à jour des KPIs avec les nouveaux filtres
+            const allKPIs = await DEIAnalytics.getAllKPIs(filters);
+            renderKPIs(allKPIs);
+            
+            // Mise à jour du rapport
+            const reportConfig = {
+                title: "Rapport personnalisé",
+                filters: filters,
+                metrics: [
+                    'applicationCompletionRate',
+                    'averageProcessingTime',
+                    'acceptanceRate'
+                ],
+                timeSeries: {
+                    interval: document.getElementById('report-interval')?.value || 'month',
+                    range: parseInt(document.getElementById('report-range')?.value || '6')
+                }
+            };
+            
+            const report = await DEIAnalytics.generateReport(reportConfig);
+            renderReport(report);
+            
+            showSuccessMessage("Tableau de bord mis à jour avec succès");
+        } catch (error) {
+            console.error("Erreur lors de la mise à jour du tableau de bord:", error);
+            showErrorMessage("Erreur lors de la mise à jour du tableau de bord");
+        }
+    });
+    
+    // Initialisation des sélecteurs de pays
+    initCountrySelector();
+    
+    // Initialisation des valeurs par défaut
+    const today = new Date();
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    
+    const startDateInput = document.getElementById('filter-start-date');
+    const endDateInput = document.getElementById('filter-end-date');
+    
+    if (startDateInput) {
+        startDateInput.valueAsDate = firstDayOfMonth;
+    }
+    
+    if (endDateInput) {
+        endDateInput.valueAsDate = today;
+    }
+}
+
+// Initialisation du sélecteur de pays
+async function initCountrySelector() {
+    const countrySelector = document.getElementById('filter-country');
+    if (!countrySelector) return;
+    
+    try {
+        // Récupération des données pour obtenir les pays disponibles
+        const data = await DEIAnalytics.fetchData();
+        
+        // Extraction des pays uniques
+        const countries = [...new Set(data
+            .filter(item => item.destinationCountry)
+            .map(item => item.destinationCountry))
+        ].sort();
+        
+        // Ajout des options
+        countrySelector.innerHTML = '<option value="all">Tous les pays</option>';
+        
+        countries.forEach(country => {
+            const option = document.createElement('option');
+            option.value = country;
+            option.textContent = country;
+            countrySelector.appendChild(option);
+        });
+    } catch (error) {
+        console.error("Erreur lors de l'initialisation du sélecteur de pays:", error);
+    }
+}
+
+// Configuration du générateur de rapports personnalisés
+function initReportBuilder() {
+    const reportBuilderForm = document.getElementById('report-builder-form');
+    if (!reportBuilderForm) return;
+    
+    // Remplissage des métriques disponibles
+    const metricsContainer = document.getElementById('report-metrics');
+    if (metricsContainer) {
+        for (const [kpiName, kpiDefinition] of Object.entries(DEIAnalytics.KPI_DEFINITIONS)) {
+            const checkboxDiv = document.createElement('div');
+            checkboxDiv.className = 'form-check';
+            checkboxDiv.innerHTML = `
+                <input class="form-check-input" type="checkbox" id="metric-${kpiName}" name="metrics" value="${kpiName}">
+                <label class="form-check-label" for="metric-${kpiName}">
+                    ${kpiDefinition.title}
+                </label>
+            `;
+            metricsContainer.appendChild(checkboxDiv);
+        }
+    }
+    
+    // Gestionnaire d'événements pour le formulaire de rapport
+    reportBuilderForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        
+        // Récupération des métriques sélectionnées
+        const selectedMetrics = Array.from(
+            document.querySelectorAll('input[name="metrics"]:checked')
+        ).map(input => input.value);
+        
+        if (selectedMetrics.length === 0) {
+            showErrorMessage("Veuillez sélectionner au moins une métrique");
+            return;
+        }
+        
+        // Récupération des filtres
+        const filters = {
+            startDate: document.getElementById('report-start-date')?.value,
+            endDate: document.getElementById('report-end-date')?.value,
+            status: document.getElementById('report-status')?.value,
+            destinationCountry: document.getElementById('report-country')?.value,
+            programType: document.getElementById('report-program')?.value
+        };
+        
+        // Nettoyage des filtres vides
+        Object.keys(filters).forEach(key => {
+            if (!filters[key] || filters[key] === 'all') {
+                delete filters[key];
+            } else if (key.includes('Date')) {
+                filters[key] += 'T00:00:00.000Z';
+            }
+        });
+        
+        // Configuration du rapport
+        const reportConfig = {
+            title: document.getElementById('report-title')?.value || "Rapport personnalisé",
+            filters: filters,
+            metrics: selectedMetrics,
+            timeSeries: {
+                interval: document.getElementById('report-interval')?.value || 'month',
+                range: parseInt(document.getElementById('report-range')?.value || '6')
+            }
+        };
+        
+        try {
+            // Génération et affichage du rapport
+            const report = await DEIAnalytics.generateReport(reportConfig);
+            renderReport(report);
+            
+            // Affichage de la section du rapport
+            document.getElementById('custom-report-section')?.classList.remove('d-none');
+            
+            // Défilement jusqu'au rapport
+            document.getElementById('custom-report-container')?.scrollIntoView({
+                behavior: 'smooth'
+            });
+            
+            showSuccessMessage("Rapport généré avec succès");
+        } catch (error) {
+            console.error("Erreur lors de la génération du rapport:", error);
+            showErrorMessage("Erreur lors de la génération du rapport");
+        }
+    });
+}
+
+// Initialisation du module
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialisation des composants
+    initFilters();
+    initReportBuilder();
+    initDashboard();
+    
+    console.log("Module d'analyse DEI-StudyBloom initialisé avec succès!");
+});
