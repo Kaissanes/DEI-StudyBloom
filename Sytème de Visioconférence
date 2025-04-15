@@ -1,0 +1,2269 @@
+// DEI-StudyBloom - Système de visioconférence
+// Fichier: videoconference.js
+
+// Configuration de base
+const STUN_SERVERS = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" }
+  ]
+};
+
+// Classe principale du système de visioconférence
+class DEIVideoConference {
+  constructor(roomId, username, config = {}) {
+    this.roomId = roomId;
+    this.username = username;
+    this.config = {
+      enableAudio: config.enableAudio !== undefined ? config.enableAudio : true,
+      enableVideo: config.enableVideo !== undefined ? config.enableVideo : true,
+      autoJoin: config.autoJoin !== undefined ? config.autoJoin : false,
+      videoQuality: config.videoQuality || 'standard', // 'low', 'standard', 'high'
+      serverUrl: config.serverUrl || 'https://signaling.dei-studybloom.fr',
+      ...config
+    };
+    
+    // État de la conférence
+    this.state = {
+      isConnected: false,
+      isRecording: false,
+      isSharingScreen: false,
+      participants: new Map(),
+      localStream: null,
+      screenStream: null,
+      recordingStream: null,
+      mediaRecorder: null,
+      recordedChunks: []
+    };
+    
+    // Référence aux éléments DOM
+    this.elements = {
+      localVideo: null,
+      remoteVideosContainer: null,
+      controlsContainer: null
+    };
+    
+    // Connexion WebRTC
+    this.peerConnections = new Map();
+    this.signaling = null;
+    
+    // Gestionnaires d'événements
+    this.eventHandlers = {};
+  }
+  
+  // Initialisation du système
+  async initialize(localVideoEl, remoteContainer, controlsContainer) {
+    this.elements.localVideo = localVideoEl;
+    this.elements.remoteVideosContainer = remoteContainer;
+    this.elements.controlsContainer = controlsContainer;
+    
+    // Initialiser la connexion de signalisation
+    this._initializeSignaling();
+    
+    // Créer les contrôles UI
+    this._createControls();
+    
+    // Démarrer les médias locaux si autoJoin est activé
+    if (this.config.autoJoin) {
+      await this.joinRoom();
+    }
+    
+    return this;
+  }
+  
+  // Rejoindre la salle de conférence
+  async joinRoom() {
+    try {
+      // Obtenir les flux média locaux
+      this.state.localStream = await navigator.mediaDevices.getUserMedia({
+        audio: this.config.enableAudio,
+        video: this.config.enableVideo ? this._getVideoConstraints() : false
+      });
+      
+      // Afficher la vidéo locale
+      if (this.elements.localVideo) {
+        this.elements.localVideo.srcObject = this.state.localStream;
+        this.elements.localVideo.muted = true; // Couper le son local pour éviter l'écho
+      }
+      
+      // Se connecter à la salle
+      this.signaling.emit('join-room', {
+        roomId: this.roomId,
+        username: this.username
+      });
+      
+      this.state.isConnected = true;
+      this._triggerEvent('roomJoined', { roomId: this.roomId });
+      
+      return true;
+    } catch (error) {
+      console.error('Erreur lors de la connexion à la salle:', error);
+      this._triggerEvent('error', { type: 'join-room', error });
+      return false;
+    }
+  }
+  
+  // Quitter la salle de conférence
+  leaveRoom() {
+    // Arrêter le partage d'écran s'il est actif
+    if (this.state.isSharingScreen) {
+      this.stopScreenSharing();
+    }
+    
+    // Arrêter l'enregistrement s'il est actif
+    if (this.state.isRecording) {
+      this.stopRecording();
+    }
+    
+    // Arrêter les flux média locaux
+    if (this.state.localStream) {
+      this.state.localStream.getTracks().forEach(track => track.stop());
+      this.state.localStream = null;
+    }
+    
+    // Fermer toutes les connexions peer
+    this.peerConnections.forEach((pc) => {
+      pc.close();
+    });
+    this.peerConnections.clear();
+    
+    // Vider la liste des participants
+    this.state.participants.clear();
+    
+    // Nettoyer le conteneur de vidéos distantes
+    if (this.elements.remoteVideosContainer) {
+      this.elements.remoteVideosContainer.innerHTML = '';
+    }
+    
+    // Informer le serveur
+    if (this.signaling) {
+      this.signaling.emit('leave-room', { roomId: this.roomId });
+    }
+    
+    this.state.isConnected = false;
+    this._triggerEvent('roomLeft', { roomId: this.roomId });
+    
+    return true;
+  }
+  
+  // Démarrer le partage d'écran
+  async startScreenSharing() {
+    try {
+      // Obtenir le flux de partage d'écran
+      this.state.screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+      
+      // Remplacer la piste vidéo locale par celle du partage d'écran
+      const videoTrack = this.state.screenStream.getVideoTracks()[0];
+      
+      // Mettre à jour toutes les connexions peer
+      this.peerConnections.forEach(async (pc) => {
+        const senders = pc.getSenders();
+        const sender = senders.find(s => s.track && s.track.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(videoTrack);
+        }
+      });
+      
+      // Écouter l'événement d'arrêt du partage d'écran
+      videoTrack.addEventListener('ended', () => {
+        this.stopScreenSharing();
+      });
+      
+      this.state.isSharingScreen = true;
+      this._triggerEvent('screenSharingStarted');
+      
+      return true;
+    } catch (error) {
+      console.error('Erreur lors du partage d\'écran:', error);
+      this._triggerEvent('error', { type: 'screen-sharing', error });
+      return false;
+    }
+  }
+  
+  // Arrêter le partage d'écran
+  stopScreenSharing() {
+    if (!this.state.isSharingScreen || !this.state.screenStream) {
+      return false;
+    }
+    
+    // Arrêter les pistes du flux de partage d'écran
+    this.state.screenStream.getTracks().forEach(track => track.stop());
+    
+    // Restaurer la piste vidéo originale
+    if (this.state.localStream) {
+      const videoTrack = this.state.localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        this.peerConnections.forEach(async (pc) => {
+          const senders = pc.getSenders();
+          const sender = senders.find(s => s.track && s.track.kind === 'video');
+          if (sender) {
+            await sender.replaceTrack(videoTrack);
+          }
+        });
+      }
+    }
+    
+    this.state.screenStream = null;
+    this.state.isSharingScreen = false;
+    this._triggerEvent('screenSharingStopped');
+    
+    return true;
+  }
+  
+  // Démarrer l'enregistrement de la session
+  startRecording() {
+    if (this.state.isRecording) {
+      return false;
+    }
+    
+    try {
+      // Créer un flux combiné pour l'enregistrement
+      const streams = [this.state.localStream];
+      this.state.participants.forEach(participant => {
+        if (participant.stream) {
+          streams.push(participant.stream);
+        }
+      });
+      
+      // Créer un canvas pour combiner les flux
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      const ctx = canvas.getContext('2d');
+      
+      // Fonction pour dessiner les flux vidéo sur le canvas
+      const drawVideoFrames = () => {
+        if (!this.state.isRecording) return;
+        
+        ctx.fillStyle = '#f8f9fa';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        const totalVideos = streams.length;
+        let columns = Math.ceil(Math.sqrt(totalVideos));
+        let rows = Math.ceil(totalVideos / columns);
+        
+        const width = canvas.width / columns;
+        const height = canvas.height / rows;
+        
+        streams.forEach((stream, index) => {
+          if (!stream) return;
+          
+          const videoTracks = stream.getVideoTracks();
+          if (videoTracks.length === 0) return;
+          
+          const x = (index % columns) * width;
+          const y = Math.floor(index / columns) * height;
+          
+          // Récupérer l'élément vidéo correspondant
+          const videoElements = document.querySelectorAll('video');
+          let videoEl = null;
+          
+          for (let i = 0; i < videoElements.length; i++) {
+            if (videoElements[i].srcObject === stream) {
+              videoEl = videoElements[i];
+              break;
+            }
+          }
+          
+          if (videoEl) {
+            ctx.drawImage(videoEl, x, y, width, height);
+            
+            // Ajouter le nom du participant
+            const participantName = index === 0 ? 'Vous' : this._getParticipantNameByStream(stream);
+            if (participantName) {
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+              ctx.fillRect(x, y + height - 30, width, 30);
+              ctx.fillStyle = 'white';
+              ctx.font = '14px Arial';
+              ctx.fillText(participantName, x + 10, y + height - 10);
+            }
+          }
+        });
+        
+        requestAnimationFrame(drawVideoFrames);
+      };
+      
+      // Démarrer le dessin des frames
+      drawVideoFrames();
+      
+      // Créer un flux à partir du canvas
+      this.state.recordingStream = canvas.captureStream(30); // 30 FPS
+      
+      // Ajouter les pistes audio au flux d'enregistrement
+      streams.forEach(stream => {
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          this.state.recordingStream.addTrack(audioTracks[0]);
+        }
+      });
+      
+      // Créer un MediaRecorder
+      this.state.mediaRecorder = new MediaRecorder(this.state.recordingStream, {
+        mimeType: 'video/webm;codecs=vp9,opus'
+      });
+      
+      this.state.recordedChunks = [];
+      
+      this.state.mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          this.state.recordedChunks.push(event.data);
+        }
+      };
+      
+      this.state.mediaRecorder.onstop = () => {
+        const blob = new Blob(this.state.recordedChunks, { type: 'video/webm' });
+        this._saveRecording(blob);
+      };
+      
+      // Démarrer l'enregistrement
+      this.state.mediaRecorder.start(1000); // Intervalle de 1 seconde
+      this.state.isRecording = true;
+      this._triggerEvent('recordingStarted');
+      
+      return true;
+    } catch (error) {
+      console.error('Erreur lors du démarrage de l\'enregistrement:', error);
+      this._triggerEvent('error', { type: 'recording', error });
+      return false;
+    }
+  }
+  
+  // Arrêter l'enregistrement
+  stopRecording() {
+    if (!this.state.isRecording || !this.state.mediaRecorder) {
+      return false;
+    }
+    
+    this.state.mediaRecorder.stop();
+    this.state.isRecording = false;
+    this._triggerEvent('recordingStopped');
+    
+    return true;
+  }
+  
+  // Activer/désactiver la caméra
+  toggleCamera() {
+    if (!this.state.localStream) return false;
+    
+    const videoTracks = this.state.localStream.getVideoTracks();
+    if (videoTracks.length === 0) return false;
+    
+    const isEnabled = videoTracks[0].enabled;
+    videoTracks[0].enabled = !isEnabled;
+    
+    this._triggerEvent('cameraToggled', { enabled: !isEnabled });
+    return true;
+  }
+  
+  // Activer/désactiver le microphone
+  toggleMicrophone() {
+    if (!this.state.localStream) return false;
+    
+    const audioTracks = this.state.localStream.getAudioTracks();
+    if (audioTracks.length === 0) return false;
+    
+    const isEnabled = audioTracks[0].enabled;
+    audioTracks[0].enabled = !isEnabled;
+    
+    this._triggerEvent('microphoneToggled', { enabled: !isEnabled });
+    return true;
+  }
+  
+  // Enregistrer un gestionnaire d'événements
+  on(eventName, handler) {
+    if (!this.eventHandlers[eventName]) {
+      this.eventHandlers[eventName] = [];
+    }
+    this.eventHandlers[eventName].push(handler);
+    return this;
+  }
+  
+  // Méthodes privées
+  _initializeSignaling() {
+    // Connexion au serveur de signalisation
+    this.signaling = io(this.config.serverUrl);
+    
+    // Gestionnaires d'événements pour la signalisation
+    this.signaling.on('connect', () => {
+      console.log('Connecté au serveur de signalisation');
+    });
+    
+    this.signaling.on('disconnect', () => {
+      console.log('Déconnecté du serveur de signalisation');
+    });
+    
+    this.signaling.on('error', (error) => {
+      console.error('Erreur de signalisation:', error);
+      this._triggerEvent('error', { type: 'signaling', error });
+    });
+    
+    // Événements liés à la conférence
+    this.signaling.on('user-joined', async (user) => {
+      console.log(`Utilisateur rejoint: ${user.username}`);
+      await this._handleUserJoined(user);
+    });
+    
+    this.signaling.on('user-left', (user) => {
+      console.log(`Utilisateur parti: ${user.username}`);
+      this._handleUserLeft(user);
+    });
+    
+    this.signaling.on('offer', async (data) => {
+      await this._handleOffer(data);
+    });
+    
+    this.signaling.on('answer', (data) => {
+      this._handleAnswer(data);
+    });
+    
+    this.signaling.on('ice-candidate', (data) => {
+      this._handleIceCandidate(data);
+    });
+  }
+  
+  async _handleUserJoined(user) {
+    // Créer une connexion peer pour le nouvel utilisateur
+    const peerConnection = new RTCPeerConnection(STUN_SERVERS);
+    this.peerConnections.set(user.id, peerConnection);
+    
+    // Ajouter les pistes locales à la connexion peer
+    if (this.state.localStream) {
+      this.state.localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, this.state.localStream);
+      });
+    }
+    
+    // Gérer les candidats ICE
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        this.signaling.emit('ice-candidate', {
+          to: user.id,
+          candidate: event.candidate
+        });
+      }
+    };
+    
+    // Gérer les changements d'état de connexion
+    peerConnection.onconnectionstatechange = () => {
+      console.log(`État de connexion avec ${user.username}: ${peerConnection.connectionState}`);
+    };
+    
+    // Gérer la réception des pistes distantes
+    peerConnection.ontrack = (event) => {
+      console.log(`Piste reçue de ${user.username}`);
+      this._handleRemoteTrack(event, user);
+    };
+    
+    // Créer et envoyer une offre
+    try {
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      
+      this.signaling.emit('offer', {
+        to: user.id,
+        offer: peerConnection.localDescription
+      });
+    } catch (error) {
+      console.error('Erreur lors de la création de l\'offre:', error);
+    }
+    
+    // Ajouter l'utilisateur à la liste des participants
+    this.state.participants.set(user.id, {
+      id: user.id,
+      username: user.username,
+      stream: null,
+      videoElement: null
+    });
+    
+    this._triggerEvent('userJoined', { user });
+  }
+  
+  _handleUserLeft(user) {
+    // Supprimer la connexion peer
+    const peerConnection = this.peerConnections.get(user.id);
+    if (peerConnection) {
+      peerConnection.close();
+      this.peerConnections.delete(user.id);
+    }
+    
+    // Supprimer l'élément vidéo
+    const participant = this.state.participants.get(user.id);
+    if (participant && participant.videoElement) {
+      participant.videoElement.remove();
+    }
+    
+    // Supprimer le participant
+    this.state.participants.delete(user.id);
+    
+    this._triggerEvent('userLeft', { user });
+  }
+  
+  async _handleOffer({ from, offer }) {
+    // Créer une connexion peer pour l'utilisateur
+    let peerConnection = this.peerConnections.get(from);
+    
+    if (!peerConnection) {
+      peerConnection = new RTCPeerConnection(STUN_SERVERS);
+      this.peerConnections.set(from, peerConnection);
+      
+      // Ajouter les pistes locales à la connexion peer
+      if (this.state.localStream) {
+        this.state.localStream.getTracks().forEach(track => {
+          peerConnection.addTrack(track, this.state.localStream);
+        });
+      }
+      
+      // Gérer les candidats ICE
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          this.signaling.emit('ice-candidate', {
+            to: from,
+            candidate: event.candidate
+          });
+        }
+      };
+      
+      // Gérer les changements d'état de connexion
+      peerConnection.onconnectionstatechange = () => {
+        const participant = this.state.participants.get(from);
+        const username = participant ? participant.username : from;
+        console.log(`État de connexion avec ${username}: ${peerConnection.connectionState}`);
+      };
+      
+      // Gérer la réception des pistes distantes
+      peerConnection.ontrack = (event) => {
+        const participant = this.state.participants.get(from);
+        this._handleRemoteTrack(event, participant);
+      };
+    }
+    
+    // Répondre à l'offre
+    try {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      
+      this.signaling.emit('answer', {
+        to: from,
+        answer: peerConnection.localDescription
+      });
+    } catch (error) {
+      console.error('Erreur lors de la réponse à l\'offre:', error);
+    }
+  }
+  
+  async _handleAnswer({ from, answer }) {
+    const peerConnection = this.peerConnections.get(from);
+    if (peerConnection) {
+      try {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      } catch (error) {
+        console.error('Erreur lors de la définition de la réponse distante:', error);
+      }
+    }
+  }
+  
+  async _handleIceCandidate({ from, candidate }) {
+    const peerConnection = this.peerConnections.get(from);
+    if (peerConnection) {
+      try {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (error) {
+        console.error('Erreur lors de l\'ajout du candidat ICE:', error);
+      }
+    }
+  }
+  
+  _handleRemoteTrack(event, user) {
+    if (!user) return;
+    
+    const streams = event.streams;
+    if (!streams || streams.length === 0) return;
+    
+    const stream = streams[0];
+    
+    // Mettre à jour le participant avec le flux
+    const participant = this.state.participants.get(user.id);
+    if (participant) {
+      participant.stream = stream;
+      
+      // Créer ou mettre à jour l'élément vidéo
+      if (!participant.videoElement) {
+        const videoElement = document.createElement('video');
+        videoElement.autoplay = true;
+        videoElement.playsInline = true;
+        videoElement.setAttribute('data-user-id', user.id);
+        
+        // Créer un conteneur pour la vidéo
+        const videoContainer = document.createElement('div');
+        videoContainer.className = 'dei-remote-video-container';
+        
+        // Ajouter un bandeau avec le nom d'utilisateur
+        const nameTag = document.createElement('div');
+        nameTag.className = 'dei-user-name-tag';
+        nameTag.textContent = user.username;
+        
+        videoContainer.appendChild(videoElement);
+        videoContainer.appendChild(nameTag);
+        
+        this.elements.remoteVideosContainer.appendChild(videoContainer);
+        
+        participant.videoElement = videoElement;
+      }
+      
+      // Définir le flux sur l'élément vidéo
+      participant.videoElement.srcObject = stream;
+    }
+    
+    this._triggerEvent('remoteStreamReceived', { user, stream });
+  }
+  
+  _createControls() {
+    if (!this.elements.controlsContainer) return;
+    
+    const controls = document.createElement('div');
+    controls.className = 'dei-video-controls';
+    
+    // Bouton Micro
+    const micButton = document.createElement('button');
+    micButton.className = 'dei-control-button dei-mic-button';
+    micButton.innerHTML = '<i class="fas fa-microphone"></i>';
+    micButton.title = 'Activer/Désactiver le microphone';
+    micButton.addEventListener('click', () => this.toggleMicrophone());
+    
+    // Bouton Caméra
+    const cameraButton = document.createElement('button');
+    cameraButton.className = 'dei-control-button dei-camera-button';
+    cameraButton.innerHTML = '<i class="fas fa-video"></i>';
+    cameraButton.title = 'Activer/Désactiver la caméra';
+    cameraButton.addEventListener('click', () => this.toggleCamera());
+    
+    // Bouton Partage d'écran
+    const screenShareButton = document.createElement('button');
+    screenShareButton.className = 'dei-control-button dei-screen-share-button';
+    screenShareButton.innerHTML = '<i class="fas fa-desktop"></i>';
+    screenShareButton.title = 'Partager l\'écran';
+    screenShareButton.addEventListener('click', () => {
+      if (this.state.isSharingScreen) {
+        this.stopScreenSharing();
+        screenShareButton.innerHTML = '<i class="fas fa-desktop"></i>';
+      } else {
+        this.startScreenSharing();
+        screenShareButton.innerHTML = '<i class="fas fa-stop"></i>';
+      }
+    });
+    
+    // Bouton Enregistrement
+    const recordButton = document.createElement('button');
+    recordButton.className = 'dei-control-button dei-record-button';
+    recordButton.innerHTML = '<i class="fas fa-record-vinyl"></i>';
+    recordButton.title = 'Enregistrer la session';
+    recordButton.addEventListener('click', () => {
+      if (this.state.isRecording) {
+        this.stopRecording();
+        recordButton.innerHTML = '<i class="fas fa-record-vinyl"></i>';
+      } else {
+        this.startRecording();
+        recordButton.innerHTML = '<i class="fas fa-stop-circle"></i>';
+      }
+    });
+    
+    // Bouton Quitter
+    const leaveButton = document.createElement('button');
+    leaveButton.className = 'dei-control-button dei-leave-button';
+    leaveButton.innerHTML = '<i class="fas fa-phone-slash"></i>';
+    leaveButton.title = 'Quitter la conférence';
+    leaveButton.addEventListener('click', () => this.leaveRoom());
+    
+    // Ajouter les boutons au conteneur
+    controls.appendChild(micButton);
+    controls.appendChild(cameraButton);
+    controls.appendChild(screenShareButton);
+    controls.appendChild(recordButton);
+    controls.appendChild(leaveButton);
+    
+    this.elements.controlsContainer.appendChild(controls);
+  }
+  
+  _getVideoConstraints() {
+    // Définir les contraintes vidéo en fonction de la qualité configurée
+    switch (this.config.videoQuality) {
+      case 'low':
+        return {
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          frameRate: { max: 15 }
+        };
+      case 'high':
+        return {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { max: 30 }
+        };
+      case 'standard':
+      default:
+        return {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { max: 24 }
+        };
+    }
+  }
+  
+  _getParticipantNameByStream(stream) {
+    let participantName = null;
+    
+    this.state.participants.forEach(participant => {
+      if (participant.stream === stream) {
+        participantName = participant.username;
+      }
+    });
+    
+    return participantName;
+  }
+  
+  _saveRecording(blob) {
+    // Créer un lien de téléchargement pour l'enregistrement
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    
+    // Formater la date pour le nom du fichier
+    const date = new Date();
+    const formattedDate = date.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    
+    a.style.display = 'none';
+    a.href = url;
+    a.download = `DEI-StudyBloom_Recording_${formattedDate}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    
+    // Nettoyer
+    setTimeout(() => {
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      this.state.recordedChunks = [];
+    }, 100);
+    
+    this._triggerEvent('recordingSaved', { url, filename: a.download });
+  }
+  
+  _triggerEvent(eventName, data = {}) {
+    if (this.eventHandlers[eventName]) {
+      this.eventHandlers[eventName].forEach(handler => handler(data));
+    }
+  }
+}
+
+// Côté serveur (Node.js avec Express et Socket.io)
+// Fichier: server.js
+
+/*
+const express = require('express');
+const http = require('http');
+const socketIO = require('socket.io');
+const path = require('path');
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIO(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+
+// Servir les fichiers statiques
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Stockage des salles et des utilisateurs
+const rooms = new Map();
+
+io.on('connection', (socket) => {
+  console.log(`Nouvelle connexion: ${socket.id}`);
+  
+  // Rejoindre une salle
+  socket.on('join-room', ({ roomId, username }) => {
+    console.log(`${username} rejoint la salle ${roomId}`);
+    
+    // Créer la salle si elle n'existe pas
+    if (!rooms.has(roomId)) {
+      rooms.set(roomId, new Map());
+    }
+    
+    const room = rooms.get(roomId);
+    
+    // Stocker l'utilisateur dans la salle
+    room.set(socket.id, { id: socket.id, username });
+    
+    // Rejoindre la salle Socket.io
+    socket.join(roomId);
+    
+    // Informer les autres utilisateurs
+    socket.to(roomId).emit('user-joined', { id: socket.id, username });
+    
+    // Envoyer la liste des utilisateurs déjà présents
+    const users = [];
+    room.forEach((user, id) => {
+      if (id !== socket.id) {
+        users.push(user);
+      }
+    });
+    
+    socket.emit('room-users', users);
+  });
+  
+  // Quitter une salle
+  socket.on('leave-room', ({ roomId }) => {
+    handleUserLeaving(socket, roomId);
+  });
+  
+  // Signalisation WebRTC
+  socket.on('offer', ({ to, offer }) => {
+    io.to(to).emit('offer', { from: socket.id, offer });
+  });
+  
+  socket.on('answer', ({ to, answer }) => {
+    io.to(to).emit('answer', { from: socket.id, answer });
+  });
+  
+  socket.on('ice-candidate', ({ to, candidate }) => {
+    io.to(to).emit('ice-candidate', { from: socket.id, candidate });
+  });
+  
+  // Déconnexion
+  socket.on('disconnect', () => {
+    console.log(`Déconnexion: ${socket.id}`);
+    
+    // Rechercher l'utilisateur dans toutes les salles
+    rooms.forEach((users, roomId) => {
+      if (users.has(socket.id)) {
+        handleUserLeaving(socket, roomId);
+      }
+    });
+  });
+  
+  // Fonction pour gérer le départ d'un utilisateur
+  function handleUserLeaving(socket, roomId) {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    
+    const user = room.get(socket.id);
+    if (!user) return;
+    
+    console.log(`${user.username} quitte la salle ${roomId}`);
+    
+    // Supprimer l'utilisateur de la salle
+    room.delete(socket.id);
+    
+    // Informer les autres utilisateurs
+    socket.to(roomId).emit('user-left', user);
+    
+    // Supprimer la salle si elle est vide
+    if (room.size === 0) {
+      rooms.delete(roomId);
+      console.log(`Salle ${roomId} supprimée`);
+    }
+    
+    // Quitter la salle Socket.io
+    socket.leave(roomId);
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Serveur démarré sur le port ${PORT}`);
+});
+*/
+
+// Interface utilisateur HTML
+// Fichier: videoconference.html
+
+/*
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DEI-StudyBloom - Visioconférence</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  <style>
+    :root {
+      --primary-color: #4a86e8;
+      --secondary-color: #00796b;
+      --background-color: #f8f9fa;
+      --text-color: #333;
+      --border-radius: 8px;
+      --shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: var(--background-color);
+      color: var(--text-color);
+    }
+    
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    
+    .videoconference-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 15px 0;
+      border-bottom: 1px solid #ddd;
+      margin-bottom: 20px;
+    }
+    
+    .videoconference-header h1 {
+      margin: 0;
+      color: var(--primary-color);
+      font-size: 24px;
+    }
+    
+    .room-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--secondary-color);
+    }
+    
+    .video-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    
+    .local-video-wrapper, .dei-remote-video-container {
+      position: relative;
+      border-radius: var(--border-radius);
+      overflow: hidden;
+      background-color: #333;
+      box-shadow: var(--shadow);
+      aspect-ratio: 16 / 9;
+    }
+    
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    
+    .dei-user-name-tag {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background-color: rgba(0, 0, 0, 0.6);
+      color: white;
+      padding: 5px 10px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    
+    .controls-container {
+      display: flex;
+      justify-content: center;
+      padding: 15px 0;
+      background-color: white;
+      border-radius: var(--border-radius);
+      box-shadow: var(--shadow);
+      position: sticky;
+      bottom: 20px;
+    }
+    
+    .dei-video-controls {
+      display: flex;
+      gap: 15px;
+    }
+    
+    .dei-control-button {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      border: none;
+      background-color: #f0f0f0;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      transition: all 0.3s ease;
+    }
+    
+    .dei-control-button:hover {
+      background-color: #e0e0e0;
+    }
+    
+    .dei-mic-button {
+      color: #26a69a;
+    }
+    
+    .dei-camera-button {
+      color: #42a5f5;
+    }
+    
+    .dei-screen-share-button {
+      color: #7e57c2;
+    }
+    
+    .dei-record-button {
+      color: #ef5350;
+    }
+    
+    .dei-leave-button {
+      color: #f44336;
+      background-color: #ffebee;
+    }
+    
+    .dei-leave-button:hover {
+      background-color: #ffcdd2;
+    }
+    
+    .join-form {
+      max-width: 500px;
+      margin: 100px auto;
+      padding: 30px;
+      background-color: white;
+      border-radius: var(--border-radius);
+      box-shadow: var(--shadow);
+    }
+    
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+    
+    input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 16px;
+    }
+    
+    button {
+      background-color: var(--primary-color);
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: background-color 0.3s ease;
+    }
+    
+    button:hover {
+      background-color: #3b78e7;
+    }
+    
+    .hidden {
+      display: none;
+    }
+    
+    @media (max-width: 768px) {
+      .video-container {
+        grid-template-columns: 1fr;
+      }
+      
+      .dei-video-controls {
+        gap: 10px;
+      }
+      
+      .dei-control-button {
+        width: 45px;
+        height: 45px;
+        font-size: 18px;
+      }
+    }
+    
+    /* Styles pour l'état désactivé */
+    .muted .dei-mic-button,
+    .camera-off .dei-camera-button {
+      background-color: #ffcdd2;
+      color: #d32f2f;
+    }
+    
+    /* Animation pour l'enregistrement */
+    @keyframes recordPulse {
+      0% { box-shadow: 0 0 0 0 rgba(239, 83, 80, 0.7); }
+      70% { box-shadow: 0 0 0 10px rgba(239, 83, 80, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(239, 83, 80, 0); }
+    }
+    
+    .recording .dei-record-button {
+      animation: recordPulse 2s infinite;
+      background-color: #ffcdd2;
+    }
+  </style>
+</head>
+<body>
+  <!-- Formulaire de connexion -->
+  <div class="container" id="joinForm">
+    <form class="join-form">
+      <h2>Rejoindre une visioconférence</h2>
+      <div class="form-group">
+        <label for="username">Votre nom</label>
+        <input type="text" id="username" placeholder="Entrez votre nom" required>
+      </div>
+      <div class="form-group">
+        <label for="roomId">ID de la salle</label>
+        <input type="text" id="roomId" placeholder="Entrez l'ID de la salle" required>
+      </div>
+      <button type="submit" id="joinButton">Rejoindre</button>
+    </form>
+  </div>
+  
+  <!-- Interface de visioconférence -->
+  <div class="container hidden" id="conferenceContainer">
+    <div class="videoconference-header">
+      <h1>DEI-StudyBloom</h1>
+      <div class="room-info">
+        <i class="fas fa-users"></i>
+        <span id="participantCount">0</span>
+        <span id="roomIdDisplay"></span>
+      </div>
+    </div>
+    
+    <div class="video-container">
+      <div class="local-video-wrapper">
+        <video id="localVideo" autoplay muted playsinline></video>
+        <div class="dei-user-name-tag">Vous</div>
+      </div>
+      <div id="remoteVideos"></div>
+    </div>
+    
+    <div class="controls-container" id="controls"></div>
+  </div>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js"></script>
+  <script src="videoconference.js"></script>
+  <script>
+    // Code d'initialisation
+    document.addEventListener('DOMContentLoaded', () => {
+      let videoConference = null;
+      
+      // Éléments DOM
+      const joinForm = document.getElementById('joinForm');
+      const conferenceContainer = document.getElementById('conferenceContainer');
+      const joinButton = document.getElementById('joinButton');
+      const usernameInput = document.getElementById('username');
+      const roomIdInput = document.getElementById('roomId');
+      const roomIdDisplay = document.getElementById('roomIdDisplay');
+      const participantCount = document.getElementById('participantCount');
+      const localVideo = document.getElementById('localVideo');
+      const remoteVideos = document.getElementById('remoteVideos');
+      const controls = document.getElementById('controls');
+      
+      // Événements du formulaire
+      joinForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const username = usernameInput.value.trim();
+        const roomId = roomIdInput.value.trim();
+        
+        if (!username || !roomId) return;
+        
+        // Initialiser la conférence
+        videoConference = new DEIVideoConference(roomId, username, {
+          enableAudio: true,
+          enableVideo: true,
+          videoQuality: 'standard',
+          serverUrl: 'https://signaling.dei-studybloom.fr' // Remplacer par l'URL réelle du serveur
+        });
+        
+        await videoConference.initialize(localVideo, remoteVideos, controls);
+        
+        // Événements de la conférence
+        videoConference.on('roomJoined', () => {
+          joinForm.classList.add('hidden');
+          conferenceContainer.classList.remove('hidden');
+          roomIdDisplay.textContent = `Salle: ${roomId}`;
+          updateParticipantCount();
+        });
+        
+        videoConference.on('userJoined', () => {
+          updateParticipantCount();
+        });
+        
+        videoConference.on('userLeft', () => {
+          updateParticipantCount();
+        });
+        
+        videoConference.on('error', ({ type, error }) => {
+          console.error(`Erreur (${type}):`, error);
+          alert(`Une erreur est survenue: ${error.message || 'Erreur inconnue'}`);
+        });
+        
+        videoConference.on('cameraToggled', ({ enabled }) => {
+          document.body.classList.toggle('camera-off', !enabled);
+        });
+        
+        videoConference.on('microphoneToggled', ({ enabled }) => {
+          document.body.classList.toggle('muted', !enabled);
+        });
+        
+        videoConference.on('recordingStarted', () => {
+          document.body.classList.add('recording');
+        });
+        
+        videoConference.on('recordingStopped', () => {
+          document.body.classList.remove('recording');
+        });
+        
+        // Rejoindre la salle
+        await videoConference.joinRoom();
+      });
+      
+      // Fonction pour mettre à jour le compteur de participants
+      function updateParticipantCount() {
+        if (!videoConference) return;
+        
+        const count = videoConference.state.participants.size + 1; // +1 pour l'utilisateur local
+        participantCount.textContent = `${count} participant${count > 1 ? 's' : ''}`;
+      }
+      
+      // Gérer la fermeture de la page
+      window.addEventListener('beforeunload', () => {
+        if (videoConference && videoConference.state.isConnected) {
+          videoConference.leaveRoom();
+        }
+      });
+    });
+  </script>
+</body>
+</html>
+*/
+
+// Feuille de style CSS séparée pour la personnalisation avancée
+// Fichier: videoconference.css
+
+/*
+/* Thèmes de couleur personnalisés pour DEI-StudyBloom */
+:root {
+  --dei-primary: #4a86e8;
+  --dei-secondary: #00796b;
+  --dei-accent: #ff9800;
+  --dei-background: #f8f9fa;
+  --dei-surface: #ffffff;
+  --dei-error: #f44336;
+  --dei-success: #4caf50;
+  --dei-text-primary: #212121;
+  --dei-text-secondary: #757575;
+  --dei-border-radius: 8px;
+  --dei-shadow-light: 0 2px 4px rgba(0, 0, 0, 0.1);
+  --dei-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --dei-shadow-strong: 0 8px 16px rgba(0, 0, 0, 0.2);
+  --dei-transition: all 0.3s ease;
+}
+
+/* Logo et branding */
+.dei-logo {
+  height: 40px;
+  margin-right: 10px;
+}
+
+.dei-brand {
+  display: flex;
+  align-items: center;
+}
+
+/* Animations pour les transitions */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideIn {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.dei-fade-in {
+  animation: fadeIn 0.5s ease forwards;
+}
+
+.dei-slide-in {
+  animation: slideIn 0.5s ease forwards;
+}
+
+/* Badges d'état */
+.dei-status-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-left: 8px;
+}
+
+.dei-status-active {
+  background-color: var(--dei-success);
+  color: white;
+}
+
+.dei-status-recording {
+  background-color: var(--dei-error);
+  color: white;
+}
+
+/* Améliorations de la grille vidéo */
+.dei-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.dei-video-wrapper {
+  position: relative;
+  border-radius: var(--dei-border-radius);
+  overflow: hidden;
+  background-color: #333;
+  box-shadow: var(--dei-shadow);
+  aspect-ratio: 16 / 9;
+  transition: var(--dei-transition);
+}
+
+.dei-video-wrapper:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--dei-shadow-strong);
+}
+
+.dei-video-wrapper.speaking {
+  border: 2px solid var(--dei-accent);
+}
+
+/* Overlay des notifications */
+.dei-notification-overlay {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1000;
+}
+
+.dei-notification {
+  background-color: var(--dei-surface);
+  border-left: 4px solid var(--dei-primary);
+  border-radius: var(--dei-border-radius);
+  box-shadow: var(--dei-shadow);
+  padding: 12px 20px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  animation: slideIn 0.3s ease;
+}
+
+.dei-notification-icon {
+  margin-right: 12px;
+  font-size: 20px;
+  color: var(--dei-primary);
+}
+
+.dei-notification-content {
+  flex: 1;
+}
+
+.dei-notification-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.dei-notification-message {
+  font-size: 14px;
+  color: var(--dei-text-secondary);
+}
+
+.dei-close-notification {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--dei-text-secondary);
+}
+
+/* Indicateurs de qualité de connexion */
+.dei-connection-quality {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  background-color: rgba(0, 0, 0, 0.6);
+  border-radius: 4px;
+  padding: 4px 8px;
+  color: white;
+  font-size: 12px;
+}
+
+.dei-connection-bars {
+  display: flex;
+  gap: 2px;
+  margin-left: 4px;
+}
+
+.dei-connection-bar {
+  width: 3px;
+  height: 10px;
+  background-color: rgba(255, 255, 255, 0.3);
+  border-radius: 1px;
+}
+
+.dei-connection-good .dei-connection-bar:nth-child(-n+3) {
+  background-color: #4caf50;
+}
+
+.dei-connection-medium .dei-connection-bar:nth-child(-n+2) {
+  background-color: #ff9800;
+}
+
+.dei-connection-poor .dei-connection-bar:nth-child(-n+1) {
+  background-color: #f44336;
+}
+
+/* Améliorations pour les contrôles */
+.dei-control-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.dei-control-button::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.7);
+  opacity: 0;
+  border-radius: 100%;
+  transform: scale(1, 1) translate(-50%, -50%);
+  transform-origin: 50% 50%;
+}
+
+.dei-control-button:focus:not(:active)::after {
+  animation: ripple 1s ease-out;
+}
+
+@keyframes ripple {
+  0% {
+    transform: scale(0, 0);
+    opacity: 1;
+  }
+  20% {
+    transform: scale(25, 25);
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(40, 40);
+  }
+}
+
+.dei-button-tooltip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: var(--dei-transition);
+}
+
+.dei-control-button:hover .dei-button-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(-16px);
+}
+
+/* Mode étendu pour les présentations */
+.presentation-mode .video-container {
+  grid-template-columns: 3fr 1fr;
+}
+
+.presentation-mode .screen-share-video {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+/* Responsive design */
+@media (max-width: 992px) {
+  .presentation-mode .video-container {
+    grid-template-columns: 1fr;
+  }
+  
+  .presentation-mode .screen-share-video {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 576px) {
+  .dei-status-badge {
+    display: none;
+  }
+  
+  .videoconference-header h1 {
+    font-size: 18px;
+  }
+  
+  .dei-video-controls {
+    justify-content: space-between;
+    width: 100%;
+  }
+}
+*/
+
+// Fichier d'initialisation pour l'intégration du module
+// Fichier: init.js
+
+/*
+/**
+ * DEI-StudyBloom - Module de visioconférence
+ * Ce fichier initialise le module de visioconférence et l'intègre à la plateforme DEI-StudyBloom
+ */
+
+// Classe d'intégration
+class DEIVideoConferenceIntegration {
+  constructor() {
+    this.config = {
+      serverUrl: 'https://signaling.dei-studybloom.fr',
+      defaultQuality: 'standard',
+      autoRecordAdmin: false,
+      maxParticipants: 10,
+      recordingStorage: 'cloud', // 'local' ou 'cloud'
+      logLevel: 'info' // 'debug', 'info', 'warn', 'error'
+    };
+    
+    this.conference = null;
+    this.isInitialized = false;
+  }
+  
+  /**
+   * Initialise le module de visioconférence
+   * @param {Object} options - Options de configuration
+   * @returns {Promise} Promise résolue lorsque l'initialisation est terminée
+   */
+  async initialize(options = {}) {
+    // Fusionner les options avec la configuration par défaut
+    this.config = {
+      ...this.config,
+      ...options
+    };
+    
+    // Charger les ressources nécessaires
+    await this._loadResources();
+    
+    // Loguer l'initialisation
+    this._log('info', 'Module de visioconférence initialisé avec succès');
+    
+    this.isInitialized = true;
+    return this;
+  }
+  
+  /**
+   * Crée une nouvelle salle de conférence
+   * @param {Object} options - Options de la salle
+   * @returns {Promise<string>} ID de la salle créée
+   */
+  async createRoom(options = {}) {
+    this._checkInitialization();
+    
+    const defaultOptions = {
+      name: `Salle-${Date.now()}`,
+      isPrivate: true,
+      password: '',
+      maxDuration: 60, // en minutes
+      features: {
+        recording: true,
+        screenSharing: true,
+        chat: true
+      }
+    };
+    
+    const roomOptions = {
+      ...defaultOptions,
+      ...options
+    };
+    
+    try {
+      // Appel API pour créer une salle
+      const response = await fetch(`${this.config.serverUrl}/api/rooms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this._getAuthToken()}`
+        },
+        body: JSON.stringify(roomOptions)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Erreur lors de la création de la salle: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      this._log('info', `Salle créée avec succès: ${data.roomId}`);
+      
+      return data.roomId;
+    } catch (error) {
+      this._log('error', `Échec de création de la salle: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Démarre une conférence dans un conteneur spécifié
+   * @param {string} roomId - ID de la salle
+   * @param {string} username - Nom d'utilisateur
+   * @param {Object} elements - Éléments DOM
+   * @returns {Promise<DEIVideoConference>} Instance de la conférence
+   */
+  async startConference(roomId, username, elements) {
+    this._checkInitialization();
+    
+    if (!roomId || !username) {
+      throw new Error('roomId et username sont requis');
+    }
+    
+    if (!elements || !elements.localVideo || !elements.remoteVideos || !elements.controls) {
+      throw new Error('Les éléments DOM sont requis (localVideo, remoteVideos, controls)');
+    }
+    
+    try {
+      // Créer l'instance de conférence
+      this.conference = new DEIVideoConference(roomId, username, {
+        enableAudio: true,
+        enableVideo: true,
+        videoQuality: this.config.defaultQuality,
+        serverUrl: this.config.serverUrl,
+        autoJoin: true
+      });
+      
+      // Initialiser la conférence
+      await this.conference.initialize(
+        elements.localVideo,
+        elements.remoteVideos,
+        elements.controls
+      );
+      
+      // Configurer les événements
+      this._setupEventHandlers();
+      
+      return this.conference;
+    } catch (error) {
+      this._log('error', `Échec du démarrage de la conférence: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Récupère les enregistrements disponibles
+   * @param {string} roomId - ID de la salle (optionnel)
+   * @returns {Promise<Array>} Liste des enregistrements
+   */
+  async getRecordings(roomId = null) {
+    this._checkInitialization();
+    
+    try {
+      let url = `${this.config.serverUrl}/api/recordings`;
+      if (roomId) {
+        url += `?roomId=${roomId}`;
+      }
+      
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${this._getAuthToken()}`
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Erreur lors de la récupération des enregistrements: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      return data.recordings || [];
+    } catch (error) {
+      this._log('error', `Échec de récupération des enregistrements: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Charge les ressources nécessaires (CSS, JS)
+   * @private
+   * @returns {Promise} Promise résolue lorsque les ressources sont chargées
+   */
+  async _loadResources() {
+    return new Promise((resolve, reject) => {
+      try {
+        // Charger le CSS
+        const linkElement = document.createElement('link');
+        linkElement.rel = 'stylesheet';
+        linkElement.href = '/assets/css/videoconference.css';
+        document.head.appendChild(linkElement);
+        
+        // Charger Socket.io si nécessaire
+        if (!window.io) {
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js';
+          script.onload = resolve;
+          script.onerror = () => reject(new Error('Échec du chargement de Socket.io'));
+          document.head.appendChild(script);
+        } else {
+          resolve();
+        }
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+  
+  /**
+   * Configure les gestionnaires d'événements pour la conférence
+   * @private
+   */
+  _setupEventHandlers() {
+    if (!this.conference) return;
+    
+    // Événement de connexion à la salle
+    this.conference.on('roomJoined', (data) => {
+      this._log('info', `Connecté à la salle: ${data.roomId}`);
+      
+      // Démarrer l'enregistrement automatique pour les admins
+      if (this.config.autoRecordAdmin && this._isUserAdmin()) {
+        setTimeout(() => {
+          this.conference.startRecording();
+          this._showNotification('Enregistrement', 'Enregistrement automatique démarré');
+        }, 2000);
+      }
+    });
+    
+    // Événement d'arrivée d'un participant
+    this.conference.on('userJoined', (data) => {
+      this._log('info', `Utilisateur rejoint: ${data.user.username}`);
+      this._showNotification('Nouveau participant', `${data.user.username} a rejoint la conférence`);
+    });
+    
+    // Événement de départ d'un participant
+    this.conference.on('userLeft', (data) => {
+      this._log('info', `Utilisateur parti: ${data.user.username}`);
+      this._showNotification('Participant parti', `${data.user.username} a quitté la conférence`);
+    });
+    
+    // Événement d'erreur
+    this.conference.on('error', (data) => {
+      this._log('error', `Erreur (${data.type}): ${data.error.message || 'Erreur inconnue'}`);
+      this._showNotification('Erreur', `Une erreur est survenue: ${data.error.message || 'Erreur inconnue'}`, 'error');
+    });
+    
+    // Événement de début d'enregistrement
+    this.conference.on('recordingStarted', () => {
+      this._log('info', 'Enregistrement démarré');
+      this._showNotification('Enregistrement', 'L\'enregistrement a démarré');
+      
+      // Ajouter un indicateur visuel
+      const controlsContainer = document.querySelector('.controls-container');
+      if (controlsContainer) {
+        controlsContainer.classList.add('recording');
+      }
+    });
+    
+    // Événement de fin d'enregistrement
+    this.conference.on('recordingStopped', () => {
+      this._log('info', 'Enregistrement arrêté');
+      this._showNotification('Enregistrement', 'L\'enregistrement a été arrêté');
+      
+      // Retirer l'indicateur visuel
+      const controlsContainer = document.querySelector('.controls-container');
+      if (controlsContainer) {
+        controlsContainer.classList.remove('recording');
+      }
+    });
+    
+    // Événement d'enregistrement sauvegardé
+    this.conference.on('recordingSaved', (data) => {
+      this._log('info', `Enregistrement sauvegardé: ${data.filename}`);
+      
+      // Si le stockage cloud est activé, téléverser l'enregistrement
+      if (this.config.recordingStorage === 'cloud') {
+        this._uploadRecording(data.url, data.filename)
+          .then(() => {
+            this._showNotification('Enregistrement', 'L\'enregistrement a été sauvegardé dans le cloud');
+          })
+          .catch((error) => {
+            this._log('error', `Échec du téléversement de l'enregistrement: ${error.message}`);
+            this._showNotification('Erreur', 'Échec du téléversement de l\'enregistrement', 'error');
+          });
+      } else {
+        this._showNotification('Enregistrement', `L'enregistrement a été sauvegardé: ${data.filename}`);
+      }
+    });
+    
+    // Événement de début de partage d'écran
+    this.conference.on('screenSharingStarted', () => {
+      this._log('info', 'Partage d\'écran démarré');
+      this._showNotification('Partage d\'écran', 'Le partage d\'écran a démarré');
+      
+      // Passer en mode présentation
+      const videoContainer = document.querySelector('.video-container');
+      if (videoContainer) {
+        videoContainer.classList.add('presentation-mode');
+      }
+    });
+    
+    // Événement de fin de partage d'écran
+    this.conference.on('screenSharingStopped', () => {
+      this._log('info', 'Partage d\'écran arrêté');
+      this._showNotification('Partage d\'écran', 'Le partage d\'écran a été arrêté');
+      
+      // Quitter le mode présentation
+      const videoContainer = document.querySelector('.video-container');
+      if (videoContainer) {
+        videoContainer.classList.remove('presentation-mode');
+      }
+    });
+  }
+  
+  /**
+   * Vérifie si l'utilisateur est administrateur
+   * @private
+   * @returns {boolean} true si l'utilisateur est administrateur
+   */
+  _isUserAdmin() {
+    // Cette méthode doit être implémentée selon la logique d'authentification de DEI-StudyBloom
+    const userRole = localStorage.getItem('userRole') || '';
+    return userRole.toLowerCase() === 'admin' || userRole.toLowerCase() === 'administrator';
+  }
+  
+  /**
+   * Récupère le token d'authentification
+   * @private
+   * @returns {string} Token d'authentification
+   */
+  _getAuthToken() {
+    // Cette méthode doit être implémentée selon la logique d'authentification de DEI-StudyBloom
+    return localStorage.getItem('authToken') || '';
+  }
+  
+  /**
+   * Téléverse un enregistrement vers le cloud
+   * @private
+   * @param {string} url - URL de l'enregistrement local
+   * @param {string} filename - Nom du fichier
+   * @returns {Promise} Promise résolue lorsque le téléversement est terminé
+   */
+  async _uploadRecording(url, filename) {
+    try {
+      // Récupérer le blob depuis l'URL
+      const response = await fetch(url);
+      const blob = await response.blob();
+      
+      // Créer un objet FormData
+      const formData = new FormData();
+      formData.append('file', blob, filename);
+      formData.append('fileName', filename);
+      formData.append('fileType', 'video/webm');
+      
+      // Téléverser vers le serveur
+      const uploadResponse = await fetch(`${this.config.serverUrl}/api/recordings/upload`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this._getAuthToken()}`
+        },
+        body: formData
+      });
+      
+      if (!uploadResponse.ok) {
+        throw new Error(`Erreur lors du téléversement: ${uploadResponse.statusText}`);
+      }
+      
+      const data = await uploadResponse.json();
+      this._log('info', `Enregistrement téléversé avec succès: ${data.fileUrl}`);
+      
+      return data.fileUrl;
+    } catch (error) {
+      this._log('error', `Échec du téléversement: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Affiche une notification à l'utilisateur
+   * @private
+   * @param {string} title - Titre de la notification
+   * @param {string} message - Message de la notification
+   * @param {string} type - Type de notification ('info', 'success', 'warning', 'error')
+   */
+  _showNotification(title, message, type = 'info') {
+    // Vérifier si le conteneur de notifications existe
+    let notificationOverlay = document.querySelector('.dei-notification-overlay');
+    
+    if (!notificationOverlay) {
+      // Créer le conteneur s'il n'existe pas
+      notificationOverlay = document.createElement('div');
+      notificationOverlay.className = 'dei-notification-overlay';
+      document.body.appendChild(notificationOverlay);
+    }
+    
+    // Créer la notification
+    const notification = document.createElement('div');
+    notification.className = `dei-notification dei-notification-${type}`;
+    
+    // Définir l'icône en fonction du type
+    let iconClass = 'fas fa-info-circle';
+    if (type === 'success') iconClass = 'fas fa-check-circle';
+    if (type === 'warning') iconClass = 'fas fa-exclamation-triangle';
+    if (type === 'error') iconClass = 'fas fa-times-circle';
+    
+    // Structure de la notification
+    notification.innerHTML = `
+      <div class="dei-notification-icon">
+        <i class="${iconClass}"></i>
+      </div>
+      <div class="dei-notification-content">
+        <div class="dei-notification-title">${title}</div>
+        <div class="dei-notification-message">${message}</div>
+      </div>
+      <button class="dei-close-notification">
+        <i class="fas fa-times"></i>
+      </button>
+    `;
+    
+    // Ajouter au conteneur
+    notificationOverlay.appendChild(notification);
+    
+    // Configurer le bouton de fermeture
+    const closeButton = notification.querySelector('.dei-close-notification');
+    closeButton.addEventListener('click', () => {
+      notification.remove();
+    });
+    
+    // Supprimer automatiquement après 5 secondes
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.remove();
+      }
+    }, 5000);
+  }
+  
+  /**
+   * Journalise un message avec le niveau spécifié
+   * @private
+   * @param {string} level - Niveau de journalisation ('debug', 'info', 'warn', 'error')
+   * @param {string} message - Message à journaliser
+   */
+  _log(level, message) {
+    const logLevels = {
+      debug: 0,
+      info: 1,
+      warn: 2,
+      error: 3
+    };
+    
+    const configLevel = logLevels[this.config.logLevel] || 1;
+    const messageLevel = logLevels[level] || 1;
+    
+    if (messageLevel >= configLevel) {
+      const prefix = '[DEI-VideoConference]';
+      
+      switch (level) {
+        case 'debug':
+          console.debug(`${prefix} ${message}`);
+          break;
+        case 'info':
+          console.info(`${prefix} ${message}`);
+          break;
+        case 'warn':
+          console.warn(`${prefix} ${message}`);
+          break;
+        case 'error':
+          console.error(`${prefix} ${message}`);
+          break;
+        default:
+          console.log(`${prefix} ${message}`);
+      }
+    }
+  }
+  
+  /**
+   * Vérifie si le module est initialisé
+   * @private
+   * @throws {Error} Si le module n'est pas initialisé
+   */
+  _checkInitialization() {
+    if (!this.isInitialized) {
+      throw new Error('Le module de visioconférence n\'est pas initialisé. Appelez initialize() d\'abord.');
+    }
+  }
+}
+
+// Exemple d'utilisation avec documentation
+/**
+ * Comment utiliser le module de visioconférence dans DEI-StudyBloom:
+ * 
+ * 1. Initialiser le module:
+ * const videoModule = new DEIVideoConferenceIntegration();
+ * await videoModule.initialize({
+ *   serverUrl: 'https://votre-serveur-signaling.com',
+ *   defaultQuality: 'high'
+ * });
+ * 
+ * 2. Créer une salle:
+ * const roomId = await videoModule.createRoom({
+ *   name: 'Entretien avec Étudiant',
+ *   isPrivate: true
+ * });
+ * 
+ * 3. Démarrer une conférence:
+ * const conference = await videoModule.startConference(roomId, 'Conseiller DEI', {
+ *   localVideo: document.getElementById('localVideo'),
+ *   remoteVideos: document.getElementById('remoteVideos'),
+ *   controls: document.getElementById('controls')
+ * });
+ * 
+ * 4. Utiliser les fonctions de la conférence:
+ * conference.toggleMicrophone();
+ * conference.startScreenSharing();
+ * conference.startRecording();
+ * 
+ * 5. Récupérer les enregistrements:
+ * const recordings = await videoModule.getRecordings(roomId);
+ */
+
+// Exporter le module
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    DEIVideoConference,
+    DEIVideoConferenceIntegration
+  };
+}
+
+// Pour l'utilisation dans le navigateur
+if (typeof window !== 'undefined') {
+  window.DEIVideoConference = DEIVideoConference;
+  window.DEIVideoConferenceIntegration = DEIVideoConferenceIntegration;
+}
+*/
+
+// Documentation technique du module de visioconférence
+// Fichier: README.md
+
+/*
+# Module de visioconférence pour DEI-StudyBloom
+
+Ce module permet d'intégrer une solution complète de visioconférence dans la plateforme DEI-StudyBloom, avec prise en charge des entretiens individuels, du partage d'écran et de l'enregistrement des sessions.
+
+## Caractéristiques techniques
+
+- Communication en temps réel basée sur WebRTC
+- Signalisation via Socket.io
+- Qualité vidéo configurable (basse, standard, haute)
+- Enregistrement local ou cloud des sessions
+- Interface utilisateur responsive et personnalisable
+- Partage d'écran natif
+- Détection des participants actifs
+- Indicateurs de qualité de connexion
+- Système de notifications intégré
+- Mode présentation automatique
+
+## Architecture
+
+Le module se compose de plusieurs fichiers :
+
+- `videoconference.js`: Classe principale implémentant les fonctionnalités WebRTC
+- `server.js`: Serveur de signalisation pour la coordination des connexions
+- `videoconference.html`: Modèle HTML pour l'interface utilisateur
+- `videoconference.css`: Styles CSS pour personnaliser l'apparence
+- `init.js`: Classe d'intégration pour faciliter l'utilisation dans DEI-StudyBloom
+
+## Prérequis serveur
+
+- Node.js 14+ avec npm
+- Serveur STUN/TURN pour la traversée NAT (recommandé pour les connexions fiables)
+- Stockage pour les enregistrements (local ou cloud)
+
+## Installation
+
+1. Cloner le dépôt dans le dossier de modules de DEI-StudyBloom
+2. Installer les dépendances:
+
+```bash
+cd dei-studybloom/modules/videoconference
+npm install
+```
+
+3. Configurer le serveur de signalisation:
+
+```bash
+cp config.example.js config.js
+# Éditer config.js avec les paramètres souhaités
+```
+
+4. Démarrer le serveur de signalisation:
+
+```bash
+npm start
+```
+
+## Intégration dans DEI-StudyBloom
+
+Ajouter le code suivant dans l'en-tête de la page:
+
+```html
+<link rel="stylesheet" href="/assets/css/videoconference.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js"></script>
+<script src="/modules/videoconference/videoconference.js"></script>
+<script src="/modules/videoconference/init.js"></script>
+```
+
+Exemple d'initialisation et d'utilisation:
+
+```javascript
+document.addEventListener('DOMContentLoaded', async () => {
+  // Initialiser le module
+  const videoModule = new DEIVideoConferenceIntegration();
+  await videoModule.initialize({
+    serverUrl: 'https://signaling.dei-studybloom.fr',
+    defaultQuality: 'standard',
+    autoRecordAdmin: true
+  });
+  
+  // Créer une salle à la demande
+  document.getElementById('createRoomButton').addEventListener('click', async () => {
+    const roomId = await videoModule.createRoom({
+      name: 'Entretien avec Étudiant',
+      isPrivate: true
+    });
+    
+    // Afficher l'ID de la salle
+    document.getElementById('roomIdDisplay').textContent = roomId;
+  });
+  
+  // Rejoindre une salle existante
+  document.getElementById('joinRoomButton').addEventListener('click', async () => {
+    const roomId = document.getElementById('roomIdInput').value.trim();
+    const username = document.getElementById('usernameInput').value.trim();
+    
+    if (!roomId || !username) {
+      alert('Veuillez saisir l\'ID de la salle et votre nom');
+      return;
+    }
+    
+    // Démarrer la conférence
+    const conference = await videoModule.startConference(roomId, username, {
+      localVideo: document.getElementById('localVideo'),
+      remoteVideos: document.getElementById('remoteVideos'),
+      controls: document.getElementById('controls')
+    });
+    
+    // Afficher l'interface de conférence
+    document.getElementById('joinForm').classList.add('hidden');
+    document.getElementById('conferenceContainer').classList.remove('hidden');
+  });
+});
+```
+
+## API
+
+### Classe `DEIVideoConference`
+
+La classe principale pour gérer une session de visioconférence.
+
+#### Constructeur
+
+```javascript
+const conference = new DEIVideoConference(roomId, username, config);
+```
+
+- `roomId`: Identifiant unique de la salle
+- `username`: Nom de l'utilisateur
+- `config`: Objet de configuration
+  - `enableAudio`: Activer l'audio (défaut: true)
+  - `enableVideo`: Activer la vidéo (défaut: true)
+  - `autoJoin`: Rejoindre automatiquement la salle (défaut: false)
+  - `videoQuality`: Qualité vidéo ('low', 'standard', 'high')
+  - `serverUrl`: URL du serveur de signalisation
+
+#### Méthodes principales
+
+- `initialize(localVideoEl, remoteContainer, controlsContainer)`: Initialise l'interface
+- `joinRoom()`: Rejoint la salle de conférence
+- `leaveRoom()`: Quitte la salle de conférence
+- `startScreenSharing()`: Démarre le partage d'écran
+- `stopScreenSharing()`: Arrête le partage d'écran
+- `startRecording()`: Démarre l'enregistrement
+- `stopRecording()`: Arrête l'enregistrement
+- `toggleCamera()`: Active/désactive la caméra
+- `toggleMicrophone()`: Active/désactive le microphone
+- `on(eventName, handler)`: Enregistre un gestionnaire d'événements
+
+#### Événements
+
+- `roomJoined`: Déclenché lorsque l'utilisateur rejoint la salle
+- `roomLeft`: Déclenché lorsque l'utilisateur quitte la salle
+- `userJoined`: Déclenché lorsqu'un nouvel utilisateur rejoint
+- `userLeft`: Déclenché lorsqu'un utilisateur quitte
+- `remoteStreamReceived`: Déclenché lorsqu'un flux distant est reçu
+- `screenSharingStarted`: Déclenché lorsque le partage d'écran démarre
+- `screenSharingStopped`: Déclenché lorsque le partage d'écran s'arrête
+- `recordingStarted`: Déclenché lorsque l'enregistrement démarre
+- `recordingStopped`: Déclenché lorsque l'enregistrement s'arrête
+- `recordingSaved`: Déclenché lorsque l'enregistrement est sauvegardé
+- `error`: Déclenché en cas d'erreur
+
+### Classe `DEIVideoConferenceIntegration`
+
+Classe facilitant l'intégration du module de visioconférence dans DEI-StudyBloom.
+
+#### Constructeur
+
+```javascript
+const videoModule = new DEIVideoConferenceIntegration();
+```
+
+#### Méthodes principales
+
+- `initialize(options)`: Initialise le module
+- `createRoom(options)`: Crée une nouvelle salle
+- `startConference(roomId, username, elements)`: Démarre une conférence
+- `getRecordings(roomId)`: Récupère les enregistrements
+
+## Performance et optimisation
+
+Le module est optimisé pour:
+- Minimiser la consommation de bande passante en adaptant la qualité vidéo
+- Réduire l'utilisation CPU/mémoire lors de l'enregistrement
+- Fournir une expérience fluide même sur des connexions moyennes
+- S'adapter automatiquement aux appareils mobiles
+
+## Sécurité
+
+- Toutes les communications utilisent WebRTC avec chiffrement DTLS/SRTP
+- Les salles privées nécessitent une authentification
+- Les enregistrements cloud sont chiffrés au repos
+- Protection contre l'injection de code et les attaques XSS
+
+## Personnalisation
+
+Le module peut être personnalisé via les fichiers CSS et les options de configuration. Pour appliquer le thème de DEI-StudyBloom, modifier les variables CSS dans `videoconference.css`.
+*/
