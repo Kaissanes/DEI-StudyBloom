@@ -1,0 +1,1849 @@
+<html>
+
+<head>
+<meta http-equiv=Content-Type content="text/html; charset=utf-8">
+<meta name=Generator content="Microsoft Word 15 (filtered)">
+<style>
+<!--
+ /* Font Definitions */
+ @font-face
+	{font-family:"Cambria Math";
+	panose-1:2 4 5 3 5 4 6 3 2 4;
+	src: url('https://example.com/fonts/CambriaMath.woff2') format('woff2');}
+@font-face
+	{font-family:Calibri;
+	panose-1:2 15 5 2 2 2 4 3 2 4;
+	src: url('https://example.com/fonts/Calibri.woff2') format('woff2');}
+ /* Style Definitions */
+ p.MsoNormal, li.MsoNormal, div.MsoNormal
+	{margin-top:0cm;
+	margin-right:0cm;
+	margin-bottom:8.0pt;
+	margin-left:0cm;
+	line-height:115%;
+	font-size:12.0pt;
+	font-family:"Calibri",sans-serif;}
+.MsoChpDefault
+	{font-family:"Calibri",sans-serif;}
+.MsoPapDefault
+	{margin-bottom:8.0pt;
+	line-height:115%;}
+@page WordSection1
+	{size:595.3pt 841.9pt;
+	margin:70.85pt 70.85pt 70.85pt 70.85pt;}
+div.WordSection1
+	{page:WordSection1;}
+-->
+</style>
+
+</head>
+
+<body lang=FR style='word-wrap:break-word'>
+
+<div class=WordSection1>
+
+<p class=MsoNormal>&lt;!DOCTYPE html&gt;</p>
+
+<p class=MsoNormal>&lt;html lang=&quot;fr&quot;&gt;</p>
+
+<p class=MsoNormal>&lt;head&gt;</p>
+
+<p class=MsoNormal>    &lt;meta charset=&quot;UTF-8&quot;&gt;</p>
+
+<p class=MsoNormal>    &lt;meta name=&quot;viewport&quot;
+content=&quot;width=device-width, initial-scale=1.0&quot;&gt;</p>
+
+<p class=MsoNormal>    &lt;title&gt;DEI-StudyBloom | Suivi des dossiers
+étudiants à l'international&lt;/title&gt;</p>
+
+<p class=MsoNormal>    &lt;link rel=&quot;stylesheet&quot;
+href=&quot;https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css&quot;&gt;</p>
+
+<p class=MsoNormal>    &lt;style&gt;</p>
+
+<p class=MsoNormal>        :root {</p>
+
+<p class=MsoNormal>            --primary: #4D96FF;</p>
+
+<p class=MsoNormal>            --secondary: #FF9551;</p>
+
+<p class=MsoNormal>            --accent: #FF5151;</p>
+
+<p class=MsoNormal>            --light: #F5F9FF;</p>
+
+<p class=MsoNormal>            --dark: #2D3748;</p>
+
+<p class=MsoNormal>            --success: #48BB78;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        * {</p>
+
+<p class=MsoNormal>            margin: 0;</p>
+
+<p class=MsoNormal>            padding: 0;</p>
+
+<p class=MsoNormal>            box-sizing: border-box;</p>
+
+<p class=MsoNormal>            font-family: 'Segoe UI', Tahoma, Geneva,
+Verdana, sans-serif;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        body {</p>
+
+<p class=MsoNormal>            background-color: var(--light);</p>
+
+<p class=MsoNormal>            color: var(--dark);</p>
+
+<p class=MsoNormal>            line-height: 1.6;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        /* Animations */</p>
+
+<p class=MsoNormal>        @keyframes fadeIn {</p>
+
+<p class=MsoNormal>            from { opacity: 0; transform: translateY(20px);
+}</p>
+
+<p class=MsoNormal>            to { opacity: 1; transform: translateY(0); }</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .animate {</p>
+
+<p class=MsoNormal>            animation: fadeIn 0.8s ease forwards;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        /* Header &amp; Navigation */</p>
+
+<p class=MsoNormal>        header {</p>
+
+<p class=MsoNormal>            background-color: white;</p>
+
+<p class=MsoNormal>            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);</p>
+
+<p class=MsoNormal>            position: fixed;</p>
+
+<p class=MsoNormal>            width: 100%;</p>
+
+<p class=MsoNormal>            top: 0;</p>
+
+<p class=MsoNormal>            z-index: 1000;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .container {</p>
+
+<p class=MsoNormal>            max-width: 1200px;</p>
+
+<p class=MsoNormal>            margin: 0 auto;</p>
+
+<p class=MsoNormal>            padding: 0 20px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        nav {</p>
+
+<p class=MsoNormal>            display: flex;</p>
+
+<p class=MsoNormal>            justify-content: space-between;</p>
+
+<p class=MsoNormal>            align-items: center;</p>
+
+<p class=MsoNormal>            padding: 20px 0;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .logo {</p>
+
+<p class=MsoNormal>            display: flex;</p>
+
+<p class=MsoNormal>            align-items: center;</p>
+
+<p class=MsoNormal>            font-size: 1.5rem;</p>
+
+<p class=MsoNormal>            font-weight: 700;</p>
+
+<p class=MsoNormal>            color: var(--primary);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .logo img {</p>
+
+<p class=MsoNormal>            height: 40px;</p>
+
+<p class=MsoNormal>            margin-right: 10px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .nav-links {</p>
+
+<p class=MsoNormal>            display: flex;</p>
+
+<p class=MsoNormal>            list-style: none;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .nav-links li {</p>
+
+<p class=MsoNormal>            margin-left: 30px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .nav-links a {</p>
+
+<p class=MsoNormal>            text-decoration: none;</p>
+
+<p class=MsoNormal>            color: var(--dark);</p>
+
+<p class=MsoNormal>            font-weight: 500;</p>
+
+<p class=MsoNormal>            transition: color 0.3s ease;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .nav-links a:hover {</p>
+
+<p class=MsoNormal>            color: var(--primary);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .cta-button {</p>
+
+<p class=MsoNormal>            background-color: var(--primary);</p>
+
+<p class=MsoNormal>            color: white;</p>
+
+<p class=MsoNormal>            padding: 10px 20px;</p>
+
+<p class=MsoNormal>            border-radius: 5px;</p>
+
+<p class=MsoNormal>            text-decoration: none;</p>
+
+<p class=MsoNormal>            font-weight: 600;</p>
+
+<p class=MsoNormal>            transition: background-color 0.3s ease;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .cta-button:hover {</p>
+
+<p class=MsoNormal>            background-color: #3a7fd9;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .mobile-menu {</p>
+
+<p class=MsoNormal>            display: none;</p>
+
+<p class=MsoNormal>            font-size: 1.5rem;</p>
+
+<p class=MsoNormal>            cursor: pointer;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        /* Hero Section */</p>
+
+<p class=MsoNormal>        .hero {</p>
+
+<p class=MsoNormal>            background: linear-gradient(135deg,
+var(--primary) 0%, #6e8efb 100%);</p>
+
+<p class=MsoNormal>            color: white;</p>
+
+<p class=MsoNormal>            padding: 150px 0 100px;</p>
+
+<p class=MsoNormal>            text-align: center;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .hero-content {</p>
+
+<p class=MsoNormal>            max-width: 700px;</p>
+
+<p class=MsoNormal>            margin: 0 auto;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .hero h1 {</p>
+
+<p class=MsoNormal>            font-size: 3rem;</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>            line-height: 1.2;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .hero p {</p>
+
+<p class=MsoNormal>            font-size: 1.2rem;</p>
+
+<p class=MsoNormal>            margin-bottom: 30px;</p>
+
+<p class=MsoNormal>            opacity: 0.9;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .hero-buttons {</p>
+
+<p class=MsoNormal>            display: flex;</p>
+
+<p class=MsoNormal>            justify-content: center;</p>
+
+<p class=MsoNormal>            gap: 20px;</p>
+
+<p class=MsoNormal>            margin-top: 30px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .secondary-button {</p>
+
+<p class=MsoNormal>            background-color: white;</p>
+
+<p class=MsoNormal>            color: var(--primary);</p>
+
+<p class=MsoNormal>            padding: 10px 20px;</p>
+
+<p class=MsoNormal>            border-radius: 5px;</p>
+
+<p class=MsoNormal>            text-decoration: none;</p>
+
+<p class=MsoNormal>            font-weight: 600;</p>
+
+<p class=MsoNormal>            transition: all 0.3s ease;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .secondary-button:hover {</p>
+
+<p class=MsoNormal>            background-color: rgba(255, 255, 255, 0.9);</p>
+
+<p class=MsoNormal>            transform: translateY(-2px);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .hero-image {</p>
+
+<p class=MsoNormal>            max-width: 100%;</p>
+
+<p class=MsoNormal>            margin-top: 50px;</p>
+
+<p class=MsoNormal>            border-radius: 10px;</p>
+
+<p class=MsoNormal>            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        /* Services Section */</p>
+
+<p class=MsoNormal>        .services {</p>
+
+<p class=MsoNormal>            padding: 100px 0;</p>
+
+<p class=MsoNormal>            background-color: white;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .section-header {</p>
+
+<p class=MsoNormal>            text-align: center;</p>
+
+<p class=MsoNormal>            margin-bottom: 60px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .section-header h2 {</p>
+
+<p class=MsoNormal>            font-size: 2.5rem;</p>
+
+<p class=MsoNormal>            color: var(--dark);</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .section-header p {</p>
+
+<p class=MsoNormal>            font-size: 1.1rem;</p>
+
+<p class=MsoNormal>            color: #718096;</p>
+
+<p class=MsoNormal>            max-width: 700px;</p>
+
+<p class=MsoNormal>            margin: 0 auto;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .services-grid {</p>
+
+<p class=MsoNormal>            display: grid;</p>
+
+<p class=MsoNormal>            grid-template-columns: repeat(auto-fit,
+minmax(300px, 1fr));</p>
+
+<p class=MsoNormal>            gap: 30px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .service-card {</p>
+
+<p class=MsoNormal>            background-color: var(--light);</p>
+
+<p class=MsoNormal>            border-radius: 10px;</p>
+
+<p class=MsoNormal>            padding: 30px;</p>
+
+<p class=MsoNormal>            transition: transform 0.3s ease, box-shadow 0.3s
+ease;</p>
+
+<p class=MsoNormal>            text-align: center;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .service-card:hover {</p>
+
+<p class=MsoNormal>            transform: translateY(-10px);</p>
+
+<p class=MsoNormal>            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .service-icon {</p>
+
+<p class=MsoNormal>            background-color: var(--primary);</p>
+
+<p class=MsoNormal>            color: white;</p>
+
+<p class=MsoNormal>            width: 70px;</p>
+
+<p class=MsoNormal>            height: 70px;</p>
+
+<p class=MsoNormal>            border-radius: 50%;</p>
+
+<p class=MsoNormal>            display: flex;</p>
+
+<p class=MsoNormal>            justify-content: center;</p>
+
+<p class=MsoNormal>            align-items: center;</p>
+
+<p class=MsoNormal>            font-size: 1.5rem;</p>
+
+<p class=MsoNormal>            margin: 0 auto 20px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .service-card h3 {</p>
+
+<p class=MsoNormal>            font-size: 1.5rem;</p>
+
+<p class=MsoNormal>            margin-bottom: 15px;</p>
+
+<p class=MsoNormal>            color: var(--dark);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .service-card p {</p>
+
+<p class=MsoNormal>            color: #718096;</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .learn-more {</p>
+
+<p class=MsoNormal>            color: var(--primary);</p>
+
+<p class=MsoNormal>            text-decoration: none;</p>
+
+<p class=MsoNormal>            font-weight: 600;</p>
+
+<p class=MsoNormal>            display: inline-flex;</p>
+
+<p class=MsoNormal>            align-items: center;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .learn-more i {</p>
+
+<p class=MsoNormal>            margin-left: 5px;</p>
+
+<p class=MsoNormal>            transition: transform 0.3s ease;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .learn-more:hover i {</p>
+
+<p class=MsoNormal>            transform: translateX(5px);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        /* Blog Section */</p>
+
+<p class=MsoNormal>        .blog {</p>
+
+<p class=MsoNormal>            padding: 100px 0;</p>
+
+<p class=MsoNormal>            background-color: var(--light);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .blog-grid {</p>
+
+<p class=MsoNormal>            display: grid;</p>
+
+<p class=MsoNormal>            grid-template-columns: repeat(auto-fit,
+minmax(300px, 1fr));</p>
+
+<p class=MsoNormal>            gap: 30px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .blog-card {</p>
+
+<p class=MsoNormal>            background-color: white;</p>
+
+<p class=MsoNormal>            border-radius: 10px;</p>
+
+<p class=MsoNormal>            overflow: hidden;</p>
+
+<p class=MsoNormal>            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);</p>
+
+<p class=MsoNormal>            transition: transform 0.3s ease, box-shadow 0.3s
+ease;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .blog-card:hover {</p>
+
+<p class=MsoNormal>            transform: translateY(-5px);</p>
+
+<p class=MsoNormal>            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.1);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .blog-image {</p>
+
+<p class=MsoNormal>            height: 200px;</p>
+
+<p class=MsoNormal>            background-color: #ddd;</p>
+
+<p class=MsoNormal>            background-size: cover;</p>
+
+<p class=MsoNormal>            background-position: center;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .blog-content {</p>
+
+<p class=MsoNormal>            padding: 25px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .blog-date {</p>
+
+<p class=MsoNormal>            color: #718096;</p>
+
+<p class=MsoNormal>            font-size: 0.9rem;</p>
+
+<p class=MsoNormal>            margin-bottom: 10px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .blog-card h3 {</p>
+
+<p class=MsoNormal>            font-size: 1.3rem;</p>
+
+<p class=MsoNormal>            margin-bottom: 15px;</p>
+
+<p class=MsoNormal>            color: var(--dark);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .blog-card p {</p>
+
+<p class=MsoNormal>            color: #718096;</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>            line-height: 1.6;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .all-posts {</p>
+
+<p class=MsoNormal>            text-align: center;</p>
+
+<p class=MsoNormal>            margin-top: 50px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        /* Contact Section */</p>
+
+<p class=MsoNormal>        .contact {</p>
+
+<p class=MsoNormal>            padding: 100px 0;</p>
+
+<p class=MsoNormal>            background-color: white;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .contact-wrapper {</p>
+
+<p class=MsoNormal>            display: grid;</p>
+
+<p class=MsoNormal>            grid-template-columns: repeat(auto-fit,
+minmax(300px, 1fr));</p>
+
+<p class=MsoNormal>            gap: 50px;</p>
+
+<p class=MsoNormal>            align-items: center;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .contact-info h3 {</p>
+
+<p class=MsoNormal>            font-size: 1.8rem;</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>            color: var(--dark);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .contact-info p {</p>
+
+<p class=MsoNormal>            color: #718096;</p>
+
+<p class=MsoNormal>            margin-bottom: 30px;</p>
+
+<p class=MsoNormal>            font-size: 1.1rem;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .contact-details {</p>
+
+<p class=MsoNormal>            list-style: none;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .contact-details li {</p>
+
+<p class=MsoNormal>            display: flex;</p>
+
+<p class=MsoNormal>            align-items: center;</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>            color: var(--dark);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .contact-details i {</p>
+
+<p class=MsoNormal>            color: var(--primary);</p>
+
+<p class=MsoNormal>            font-size: 1.2rem;</p>
+
+<p class=MsoNormal>            margin-right: 15px;</p>
+
+<p class=MsoNormal>            width: 20px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .contact-form {</p>
+
+<p class=MsoNormal>            background-color: var(--light);</p>
+
+<p class=MsoNormal>            padding: 40px;</p>
+
+<p class=MsoNormal>            border-radius: 10px;</p>
+
+<p class=MsoNormal>            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .form-group {</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .form-group label {</p>
+
+<p class=MsoNormal>            display: block;</p>
+
+<p class=MsoNormal>            margin-bottom: 8px;</p>
+
+<p class=MsoNormal>            font-weight: 500;</p>
+
+<p class=MsoNormal>            color: var(--dark);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .form-control {</p>
+
+<p class=MsoNormal>            width: 100%;</p>
+
+<p class=MsoNormal>            padding: 12px 15px;</p>
+
+<p class=MsoNormal>            border: 1px solid #ddd;</p>
+
+<p class=MsoNormal>            border-radius: 5px;</p>
+
+<p class=MsoNormal>            font-size: 1rem;</p>
+
+<p class=MsoNormal>            transition: border-color 0.3s ease;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .form-control:focus {</p>
+
+<p class=MsoNormal>            border-color: var(--primary);</p>
+
+<p class=MsoNormal>            outline: none;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        textarea.form-control {</p>
+
+<p class=MsoNormal>            min-height: 120px;</p>
+
+<p class=MsoNormal>            resize: vertical;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .submit-button {</p>
+
+<p class=MsoNormal>            background-color: var(--primary);</p>
+
+<p class=MsoNormal>            color: white;</p>
+
+<p class=MsoNormal>            border: none;</p>
+
+<p class=MsoNormal>            padding: 12px 25px;</p>
+
+<p class=MsoNormal>            border-radius: 5px;</p>
+
+<p class=MsoNormal>            font-size: 1rem;</p>
+
+<p class=MsoNormal>            font-weight: 600;</p>
+
+<p class=MsoNormal>            cursor: pointer;</p>
+
+<p class=MsoNormal>            transition: background-color 0.3s ease;</p>
+
+<p class=MsoNormal>            width: 100%;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .submit-button:hover {</p>
+
+<p class=MsoNormal>            background-color: #3a7fd9;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        /* Footer */</p>
+
+<p class=MsoNormal>        footer {</p>
+
+<p class=MsoNormal>            background-color: var(--dark);</p>
+
+<p class=MsoNormal>            color: white;</p>
+
+<p class=MsoNormal>            padding: 80px 0 30px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .footer-content {</p>
+
+<p class=MsoNormal>            display: grid;</p>
+
+<p class=MsoNormal>            grid-template-columns: repeat(auto-fit,
+minmax(200px, 1fr));</p>
+
+<p class=MsoNormal>            gap: 50px;</p>
+
+<p class=MsoNormal>            margin-bottom: 50px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .footer-logo {</p>
+
+<p class=MsoNormal>            font-size: 1.5rem;</p>
+
+<p class=MsoNormal>            font-weight: 700;</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>            color: white;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .footer-about p {</p>
+
+<p class=MsoNormal>            color: #CBD5E0;</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .social-links {</p>
+
+<p class=MsoNormal>            display: flex;</p>
+
+<p class=MsoNormal>            gap: 15px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .social-links a {</p>
+
+<p class=MsoNormal>            color: white;</p>
+
+<p class=MsoNormal>            background-color: rgba(255, 255, 255, 0.1);</p>
+
+<p class=MsoNormal>            width: 40px;</p>
+
+<p class=MsoNormal>            height: 40px;</p>
+
+<p class=MsoNormal>            border-radius: 50%;</p>
+
+<p class=MsoNormal>            display: flex;</p>
+
+<p class=MsoNormal>            justify-content: center;</p>
+
+<p class=MsoNormal>            align-items: center;</p>
+
+<p class=MsoNormal>            transition: background-color 0.3s ease;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .social-links a:hover {</p>
+
+<p class=MsoNormal>            background-color: var(--primary);</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .footer-links h3 {</p>
+
+<p class=MsoNormal>            font-size: 1.2rem;</p>
+
+<p class=MsoNormal>            margin-bottom: 20px;</p>
+
+<p class=MsoNormal>            font-weight: 600;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .footer-links ul {</p>
+
+<p class=MsoNormal>            list-style: none;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .footer-links li {</p>
+
+<p class=MsoNormal>            margin-bottom: 12px;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .footer-links a {</p>
+
+<p class=MsoNormal>            color: #CBD5E0;</p>
+
+<p class=MsoNormal>            text-decoration: none;</p>
+
+<p class=MsoNormal>            transition: color 0.3s ease;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .footer-links a:hover {</p>
+
+<p class=MsoNormal>            color: white;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        .copyright {</p>
+
+<p class=MsoNormal>            text-align: center;</p>
+
+<p class=MsoNormal>            padding-top: 30px;</p>
+
+<p class=MsoNormal>            border-top: 1px solid rgba(255, 255, 255, 0.1);</p>
+
+<p class=MsoNormal>            color: #CBD5E0;</p>
+
+<p class=MsoNormal>            font-size: 0.9rem;</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>        </p>
+
+<p class=MsoNormal>        /* Responsive Design */</p>
+
+<p class=MsoNormal>        @media (max-width: 768px) {</p>
+
+<p class=MsoNormal>            .hero h1 {</p>
+
+<p class=MsoNormal>                font-size: 2.2rem;</p>
+
+<p class=MsoNormal>            }</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            .nav-links {</p>
+
+<p class=MsoNormal>                display: none;</p>
+
+<p class=MsoNormal>            }</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            .mobile-menu {</p>
+
+<p class=MsoNormal>                display: block;</p>
+
+<p class=MsoNormal>            }</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            .hero-buttons {</p>
+
+<p class=MsoNormal>                flex-direction: column;</p>
+
+<p class=MsoNormal>                gap: 15px;</p>
+
+<p class=MsoNormal>            }</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            .section-header h2 {</p>
+
+<p class=MsoNormal>                font-size: 2rem;</p>
+
+<p class=MsoNormal>            }</p>
+
+<p class=MsoNormal>        }</p>
+
+<p class=MsoNormal>    &lt;/style&gt;</p>
+
+<p class=MsoNormal>&lt;/head&gt;</p>
+
+<p class=MsoNormal>&lt;body&gt;</p>
+
+<p class=MsoNormal>    &lt;!-- Header &amp; Navigation --&gt;</p>
+
+<p class=MsoNormal>    &lt;header&gt;</p>
+
+<p class=MsoNormal>        &lt;div class=&quot;container&quot;&gt;</p>
+
+<p class=MsoNormal>            &lt;nav&gt;</p>
+
+<p class=MsoNormal>                &lt;a href=&quot;#&quot;
+class=&quot;logo&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;img
+src=&quot;/api/placeholder/40/40&quot; alt=&quot;DEI-StudyBloom Logo&quot;&gt;</p>
+
+<p class=MsoNormal>                    DEI-StudyBloom</p>
+
+<p class=MsoNormal>                &lt;/a&gt;</p>
+
+<p class=MsoNormal>                &lt;ul class=&quot;nav-links&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Accueil&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                    &lt;li&gt;&lt;a
+href=&quot;#services&quot;&gt;Services&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                    &lt;li&gt;&lt;a
+href=&quot;#blog&quot;&gt;Blog&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                    &lt;li&gt;&lt;a
+href=&quot;#contact&quot;&gt;Contact&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                    &lt;li&gt;&lt;a href=&quot;#&quot;
+class=&quot;cta-button&quot;&gt;Espace Étudiant&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                &lt;/ul&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;mobile-menu&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;i class=&quot;fas
+fa-bars&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;/nav&gt;</p>
+
+<p class=MsoNormal>        &lt;/div&gt;</p>
+
+<p class=MsoNormal>    &lt;/header&gt;</p>
+
+<p class=MsoNormal>&nbsp;</p>
+
+<p class=MsoNormal>    &lt;!-- Hero Section --&gt;</p>
+
+<p class=MsoNormal>    &lt;section class=&quot;hero&quot;&gt;</p>
+
+<p class=MsoNormal>        &lt;div class=&quot;container&quot;&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;hero-content
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;h1&gt;Réalisez vos rêves d'études à
+l'international&lt;/h1&gt;</p>
+
+<p class=MsoNormal>                &lt;p&gt;DEI-StudyBloom vous accompagne dans
+toutes les étapes de votre projet d'études à l'étranger, de la recherche
+d'établissements à l'obtention de votre visa.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;hero-buttons&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;a href=&quot;#contact&quot;
+class=&quot;cta-button&quot;&gt;Démarrer mon projet&lt;/a&gt;</p>
+
+<p class=MsoNormal>                    &lt;a href=&quot;#services&quot;
+class=&quot;secondary-button&quot;&gt;Découvrir nos services&lt;/a&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;img
+src=&quot;/api/placeholder/1000/600&quot; alt=&quot;Étudiants
+internationaux&quot; class=&quot;hero-image animate&quot;&gt;</p>
+
+<p class=MsoNormal>        &lt;/div&gt;</p>
+
+<p class=MsoNormal>    &lt;/section&gt;</p>
+
+<p class=MsoNormal>&nbsp;</p>
+
+<p class=MsoNormal>    &lt;!-- Services Section --&gt;</p>
+
+<p class=MsoNormal>    &lt;section id=&quot;services&quot;
+class=&quot;services&quot;&gt;</p>
+
+<p class=MsoNormal>        &lt;div class=&quot;container&quot;&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;section-header&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;h2&gt;Nos Services&lt;/h2&gt;</p>
+
+<p class=MsoNormal>                &lt;p&gt;Des solutions complètes pour vous
+accompagner à chaque étape de votre parcours international&lt;/p&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;services-grid&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;service-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;service-icon&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;i class=&quot;fas
+fa-search-location&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Recherche
+d'établissements&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;p&gt;Trouvez l'université ou l'école
+qui correspond parfaitement à votre profil et à vos aspirations
+académiques.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                    &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;En savoir plus &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;service-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;service-icon&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;i class=&quot;fas
+fa-file-alt&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Constitution de
+dossier&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;p&gt;Bénéficiez de notre expertise
+pour préparer un dossier de candidature convaincant et complet.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                    &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;En savoir plus &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;service-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;service-icon&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;i class=&quot;fas
+fa-passport&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Démarches
+administratives&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;p&gt;Nous vous guidons à travers
+toutes les formalités : visas, assurances, logement et démarches
+locales.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                    &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;En savoir plus &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;service-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;service-icon&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;i class=&quot;fas
+fa-graduation-cap&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Suivi pédagogique&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;p&gt;Recevez un accompagnement
+personnalisé pendant toute la durée de votre séjour à l'étranger.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                    &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;En savoir plus &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;service-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;service-icon&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;i class=&quot;fas
+fa-language&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Préparation
+linguistique&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;p&gt;Améliorez vos compétences
+linguistiques avec nos partenaires pour réussir votre intégration.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                    &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;En savoir plus &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;service-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;service-icon&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;i class=&quot;fas
+fa-coins&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Financement des
+études&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;p&gt;Découvrez les bourses
+disponibles et obtenez des conseils pour financer votre projet
+d'études.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                    &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;En savoir plus &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>        &lt;/div&gt;</p>
+
+<p class=MsoNormal>    &lt;/section&gt;</p>
+
+<p class=MsoNormal>&nbsp;</p>
+
+<p class=MsoNormal>    &lt;!-- Blog Section --&gt;</p>
+
+<p class=MsoNormal>    &lt;section id=&quot;blog&quot;
+class=&quot;blog&quot;&gt;</p>
+
+<p class=MsoNormal>        &lt;div class=&quot;container&quot;&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;section-header&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;h2&gt;Actualités et conseils&lt;/h2&gt;</p>
+
+<p class=MsoNormal>                &lt;p&gt;Restez informé des dernières
+tendances et découvrez nos conseils pour réussir votre projet d'études à
+l'international&lt;/p&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;blog-grid&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;blog-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div class=&quot;blog-image&quot;
+style=&quot;background-image:
+url('/api/placeholder/400/200');&quot;&gt;&lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;blog-content&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;div
+class=&quot;blog-date&quot;&gt;12 avril 2025&lt;/div&gt;</p>
+
+<p class=MsoNormal>                        &lt;h3&gt;Les meilleures
+destinations d'études en 2025&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                        &lt;p&gt;Découvrez notre classement
+des pays les plus attractifs pour les étudiants internationaux cette
+année.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                        &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;Lire l'article &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;blog-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div class=&quot;blog-image&quot;
+style=&quot;background-image:
+url('/api/placeholder/400/200');&quot;&gt;&lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;blog-content&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;div
+class=&quot;blog-date&quot;&gt;5 avril 2025&lt;/div&gt;</p>
+
+<p class=MsoNormal>                        &lt;h3&gt;Comment financer ses
+études à l'étranger ?&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                        &lt;p&gt;Guide complet des bourses,
+aides et solutions de financement pour votre mobilité internationale.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                        &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;Lire l'article &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;blog-card
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div class=&quot;blog-image&quot;
+style=&quot;background-image:
+url('/api/placeholder/400/200');&quot;&gt;&lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;blog-content&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;div
+class=&quot;blog-date&quot;&gt;28 mars 2025&lt;/div&gt;</p>
+
+<p class=MsoNormal>                        &lt;h3&gt;Réussir son entretien de
+motivation en anglais&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                        &lt;p&gt;Conseils et exemples pour
+préparer votre entretien et convaincre les responsables d'admission.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                        &lt;a href=&quot;#&quot;
+class=&quot;learn-more&quot;&gt;Lire l'article &lt;i class=&quot;fas
+fa-arrow-right&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;all-posts&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;a href=&quot;#&quot;
+class=&quot;cta-button&quot;&gt;Voir tous les articles&lt;/a&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>        &lt;/div&gt;</p>
+
+<p class=MsoNormal>    &lt;/section&gt;</p>
+
+<p class=MsoNormal>&nbsp;</p>
+
+<p class=MsoNormal>    &lt;!-- Contact Section --&gt;</p>
+
+<p class=MsoNormal>    &lt;section id=&quot;contact&quot;
+class=&quot;contact&quot;&gt;</p>
+
+<p class=MsoNormal>        &lt;div class=&quot;container&quot;&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;section-header&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;h2&gt;Contactez-nous&lt;/h2&gt;</p>
+
+<p class=MsoNormal>                &lt;p&gt;Besoin d'informations ou d'aide
+pour votre projet ? Notre équipe est là pour vous répondre&lt;/p&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;contact-wrapper&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;contact-info
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Discutons de votre projet
+d'études&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;p&gt;Que vous soyez au début de
+votre réflexion ou prêt à vous lancer, nous sommes là pour vous accompagner
+dans votre aventure internationale.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                    &lt;ul
+class=&quot;contact-details&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;</p>
+
+<p class=MsoNormal>                            &lt;i class=&quot;fas
+fa-map-marker-alt&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                            &lt;span&gt;123 Avenue des
+Études, 75000 Paris, France&lt;/span&gt;</p>
+
+<p class=MsoNormal>                        &lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;</p>
+
+<p class=MsoNormal>                            &lt;i class=&quot;fas
+fa-phone-alt&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                            &lt;span&gt;+33 1 23 45 67
+89&lt;/span&gt;</p>
+
+<p class=MsoNormal>                        &lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;</p>
+
+<p class=MsoNormal>                            &lt;i class=&quot;fas
+fa-envelope&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                           
+&lt;span&gt;contact@dei-studybloom.fr&lt;/span&gt;</p>
+
+<p class=MsoNormal>                        &lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;</p>
+
+<p class=MsoNormal>                            &lt;i class=&quot;fas
+fa-clock&quot;&gt;&lt;/i&gt;</p>
+
+<p class=MsoNormal>                            &lt;span&gt;Lun-Ven: 9h-18h |
+Sam: 10h-16h&lt;/span&gt;</p>
+
+<p class=MsoNormal>                        &lt;/li&gt;</p>
+
+<p class=MsoNormal>                    &lt;/ul&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;contact-form
+animate&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;form action=&quot;#&quot;
+method=&quot;POST&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;div
+class=&quot;form-group&quot;&gt;</p>
+
+<p class=MsoNormal>                            &lt;label
+for=&quot;name&quot;&gt;Nom complet&lt;/label&gt;</p>
+
+<p class=MsoNormal>                            &lt;input type=&quot;text&quot;
+id=&quot;name&quot; class=&quot;form-control&quot; required&gt;</p>
+
+<p class=MsoNormal>                        &lt;/div&gt;</p>
+
+<p class=MsoNormal>                        &lt;div
+class=&quot;form-group&quot;&gt;</p>
+
+<p class=MsoNormal>                            &lt;label
+for=&quot;email&quot;&gt;Email&lt;/label&gt;</p>
+
+<p class=MsoNormal>                            &lt;input type=&quot;email&quot;
+id=&quot;email&quot; class=&quot;form-control&quot; required&gt;</p>
+
+<p class=MsoNormal>                        &lt;/div&gt;</p>
+
+<p class=MsoNormal>                        &lt;div
+class=&quot;form-group&quot;&gt;</p>
+
+<p class=MsoNormal>                            &lt;label
+for=&quot;subject&quot;&gt;Sujet&lt;/label&gt;</p>
+
+<p class=MsoNormal>                            &lt;input type=&quot;text&quot;
+id=&quot;subject&quot; class=&quot;form-control&quot; required&gt;</p>
+
+<p class=MsoNormal>                        &lt;/div&gt;</p>
+
+<p class=MsoNormal>                        &lt;div
+class=&quot;form-group&quot;&gt;</p>
+
+<p class=MsoNormal>                            &lt;label
+for=&quot;message&quot;&gt;Message&lt;/label&gt;</p>
+
+<p class=MsoNormal>                            &lt;textarea
+id=&quot;message&quot; class=&quot;form-control&quot;
+required&gt;&lt;/textarea&gt;</p>
+
+<p class=MsoNormal>                        &lt;/div&gt;</p>
+
+<p class=MsoNormal>                        &lt;button type=&quot;submit&quot;
+class=&quot;submit-button&quot;&gt;Envoyer&lt;/button&gt;</p>
+
+<p class=MsoNormal>                    &lt;/form&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>        &lt;/div&gt;</p>
+
+<p class=MsoNormal>    &lt;/section&gt;</p>
+
+<p class=MsoNormal>&nbsp;</p>
+
+<p class=MsoNormal>    &lt;!-- Footer --&gt;</p>
+
+<p class=MsoNormal>    &lt;footer&gt;</p>
+
+<p class=MsoNormal>        &lt;div class=&quot;container&quot;&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;footer-content&quot;&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;footer-about&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;footer-logo&quot;&gt;DEI-StudyBloom&lt;/div&gt;</p>
+
+<p class=MsoNormal>                    &lt;p&gt;Nous accompagnons les étudiants
+dans leur projet d'études à l'international depuis 2010, avec plus de 5000
+dossiers traités avec succès.&lt;/p&gt;</p>
+
+<p class=MsoNormal>                    &lt;div
+class=&quot;social-links&quot;&gt;</p>
+
+<p class=MsoNormal>                        &lt;a href=&quot;#&quot;&gt;&lt;i
+class=&quot;fab fa-facebook-f&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                        &lt;a href=&quot;#&quot;&gt;&lt;i
+class=&quot;fab fa-twitter&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                        &lt;a href=&quot;#&quot;&gt;&lt;i
+class=&quot;fab fa-instagram&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                        &lt;a href=&quot;#&quot;&gt;&lt;i
+class=&quot;fab fa-linkedin-in&quot;&gt;&lt;/i&gt;&lt;/a&gt;</p>
+
+<p class=MsoNormal>                    &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;footer-links&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Services&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;ul&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Recherche d'établissements&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Constitution de dossier&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Démarches administratives&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Suivi pédagogique&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Préparation linguistique&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                    &lt;/ul&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;footer-links&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;Ressources&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;ul&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Blog&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Guides par pays&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Témoignages&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;FAQ&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Événements&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                    &lt;/ul&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>                &lt;div class=&quot;footer-links&quot;&gt;</p>
+
+<p class=MsoNormal>                    &lt;h3&gt;À propos&lt;/h3&gt;</p>
+
+<p class=MsoNormal>                    &lt;ul&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Notre équipe&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Nos valeurs&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Partenaires&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Presse&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                        &lt;li&gt;&lt;a
+href=&quot;#&quot;&gt;Recrutement&lt;/a&gt;&lt;/li&gt;</p>
+
+<p class=MsoNormal>                    &lt;/ul&gt;</p>
+
+<p class=MsoNormal>                &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>            &lt;div class=&quot;copyright&quot;&gt;</p>
+
+<p class=MsoNormal>                &amp;copy; 2025 DEI-StudyBloom. Tous droits
+réservés.</p>
+
+<p class=MsoNormal>            &lt;/div&gt;</p>
+
+<p class=MsoNormal>        &lt;/div&gt;</p>
+
+<p class=MsoNormal>    &lt;/footer&gt;</p>
+
+<p class=MsoNormal>&nbsp;</p>
+
+<p class=MsoNormal>    &lt;script&gt;</p>
+
+<p class=MsoNormal>        // Animation on scroll</p>
+
+<p class=MsoNormal>        document.addEventListener('DOMContentLoaded',
+function() {</p>
+
+<p class=MsoNormal>            const animatedElements =
+document.querySelectorAll('.animate');</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            const observer = new
+IntersectionObserver((entries) =&gt; {</p>
+
+<p class=MsoNormal>                entries.forEach(entry =&gt; {</p>
+
+<p class=MsoNormal>                    if (entry.isIntersecting) {</p>
+
+<p class=MsoNormal>                        entry.target.style.opacity = 1;</p>
+
+<p class=MsoNormal>                        entry.target.style.transform =
+'translateY(0)';</p>
+
+<p class=MsoNormal>                    }</p>
+
+<p class=MsoNormal>                });</p>
+
+<p class=MsoNormal>            }, { threshold: 0.2 });</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            animatedElements.forEach(element =&gt; {</p>
+
+<p class=MsoNormal>                element.style.opacity = 0;</p>
+
+<p class=MsoNormal>                observer.observe(element);</p>
+
+<p class=MsoNormal>            });</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            // Mobile menu toggle</p>
+
+<p class=MsoNormal>            const mobileMenuButton =
+document.querySelector('.mobile-menu');</p>
+
+<p class=MsoNormal>            const navLinks =
+document.querySelector('.nav-links');</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            mobileMenuButton.addEventListener('click',
+function() {</p>
+
+<p class=MsoNormal>                navLinks.style.display =
+navLinks.style.display === 'flex' ? 'none' : 'flex';</p>
+
+<p class=MsoNormal>            });</p>
+
+<p class=MsoNormal>            </p>
+
+<p class=MsoNormal>            // Smooth scrolling for anchor links</p>
+
+<p class=MsoNormal>           
+document.querySelectorAll('a[href^=&quot;#&quot;]').forEach(anchor =&gt; {</p>
+
+<p class=MsoNormal>                anchor.addEventListener('click', function(e)
+{</p>
+
+<p class=MsoNormal>                    e.preventDefault();</p>
+
+<p class=MsoNormal>                    </p>
+
+<p class=MsoNormal>                    const targetId =
+this.getAttribute('href');</p>
+
+<p class=MsoNormal>                    if (targetId === '#') return;</p>
+
+<p class=MsoNormal>                    </p>
+
+<p class=MsoNormal>                    const targetElement =
+document.querySelector(targetId);</p>
+
+<p class=MsoNormal>                    if (targetElement) {</p>
+
+<p class=MsoNormal>                        window.scrollTo({</p>
+
+<p class=MsoNormal>                            top: targetElement.offsetTop -
+100,</p>
+
+<p class=MsoNormal>                            behavior: 'smooth'</p>
+
+<p class=MsoNormal>                        });</p>
+
+<p class=MsoNormal>                        </p>
+
+<p class=MsoNormal>                        // Close mobile menu if open</p>
+
+<p class=MsoNormal>                        if (window.innerWidth &lt;= 768) {</p>
+
+<p class=MsoNormal>                            navLinks.style.display = 'none';</p>
+
+<p class=MsoNormal>                        }</p>
+
+<p class=MsoNormal>                    }</p>
+
+<p class=MsoNormal>                });</p>
+
+<p class=MsoNormal>            });</p>
+
+<p class=MsoNormal>        });</p>
+
+<p class=MsoNormal>    &lt;/script&gt;</p>
+
+<p class=MsoNormal>&lt;/body&gt;</p>
+
+<p class=MsoNormal>&lt;/html&gt;</p>
+
+</div>
+
+</body>
+
+</html>
