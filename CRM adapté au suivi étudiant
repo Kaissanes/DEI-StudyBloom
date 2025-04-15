@@ -1,0 +1,630 @@
+# Structure du projet Django pour le CRM de DEI-StudyBloom
+
+# 1. Modèles de données (models.py)
+
+from django.db import models
+from django.contrib.auth.models import User
+from django.utils import timezone
+import uuid
+
+
+class Etudiant(models.Model):
+    """Modèle pour les profils étudiants"""
+    STATUT_CHOICES = [
+        ('prospect', 'Prospect'),
+        ('candidat', 'Candidat'),
+        ('inscrit', 'Inscrit'),
+        ('alumni', 'Alumni'),
+    ]
+    NIVEAU_ETUDES_CHOICES = [
+        ('bac', 'Baccalauréat'),
+        ('bac+1', 'Bac+1'),
+        ('bac+2', 'Bac+2'),
+        ('bac+3', 'Bac+3'),
+        ('bac+4', 'Bac+4'),
+        ('bac+5', 'Bac+5'),
+        ('doctorat', 'Doctorat'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(User, on_delete=models.CASCADE, null=True, blank=True)
+    nom = models.CharField(max_length=100)
+    prenom = models.CharField(max_length=100)
+    email = models.EmailField(unique=True)
+    telephone = models.CharField(max_length=20, blank=True)
+    date_naissance = models.DateField(null=True, blank=True)
+    adresse = models.TextField(blank=True)
+    pays_origine = models.CharField(max_length=100)
+    niveau_etudes = models.CharField(max_length=10, choices=NIVEAU_ETUDES_CHOICES)
+    filiere_actuelle = models.CharField(max_length=100, blank=True)
+    etablissement_actuel = models.CharField(max_length=200, blank=True)
+    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default='prospect')
+    date_creation = models.DateTimeField(auto_now_add=True)
+    date_modification = models.DateTimeField(auto_now=True)
+    score_engagement = models.IntegerField(default=0)  # Score calculé pour l'engagement
+    tags = models.ManyToManyField('Tag', blank=True)
+    
+    def __str__(self):
+        return f"{self.prenom} {self.nom} ({self.email})"
+    
+    class Meta:
+        verbose_name = "Étudiant"
+        verbose_name_plural = "Étudiants"
+
+
+class Tag(models.Model):
+    """Tags pour la segmentation des profils"""
+    nom = models.CharField(max_length=50, unique=True)
+    description = models.TextField(blank=True)
+    
+    def __str__(self):
+        return self.nom
+
+
+class Interaction(models.Model):
+    """Historique des interactions avec les étudiants"""
+    TYPE_CHOICES = [
+        ('email', 'Email'),
+        ('appel', 'Appel téléphonique'),
+        ('rdv', 'Rendez-vous'),
+        ('evenement', 'Participation événement'),
+        ('document', 'Soumission document'),
+        ('demande', 'Demande d\'information'),
+        ('autre', 'Autre'),
+    ]
+    
+    etudiant = models.ForeignKey(Etudiant, on_delete=models.CASCADE, related_name='interactions')
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    date = models.DateTimeField(default=timezone.now)
+    description = models.TextField()
+    utilisateur = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='interactions_creees')
+    resultat = models.TextField(blank=True)
+    suivi_requis = models.BooleanField(default=False)
+    date_suivi = models.DateField(null=True, blank=True)
+    
+    def __str__(self):
+        return f"{self.etudiant} - {self.type} ({self.date.strftime('%d/%m/%Y')})"
+    
+    class Meta:
+        ordering = ['-date']
+
+
+class CampagneMarketing(models.Model):
+    """Campagnes marketing automatisées"""
+    STATUT_CHOICES = [
+        ('brouillon', 'Brouillon'),
+        ('planifiee', 'Planifiée'),
+        ('en_cours', 'En cours'),
+        ('terminee', 'Terminée'),
+        ('annulee', 'Annulée'),
+    ]
+    TYPE_CHOICES = [
+        ('email', 'Campagne Email'),
+        ('sms', 'Campagne SMS'),
+        ('notification', 'Notification'),
+        ('mixte', 'Campagne mixte'),
+    ]
+    
+    nom = models.CharField(max_length=200)
+    type = models.CharField(max_length=20, choices=TYPE_CHOICES)
+    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default='brouillon')
+    date_creation = models.DateTimeField(auto_now_add=True)
+    date_debut = models.DateTimeField(null=True, blank=True)
+    date_fin = models.DateTimeField(null=True, blank=True)
+    segmentation = models.ManyToManyField(Tag, blank=True, related_name='campagnes')
+    description = models.TextField(blank=True)
+    contenu = models.TextField()
+    createur = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    
+    def __str__(self):
+        return self.nom
+
+
+class ReactionCampagne(models.Model):
+    """Suivi des réactions aux campagnes marketing"""
+    TYPE_REACTION_CHOICES = [
+        ('ouverture', 'Ouverture'),
+        ('clic', 'Clic'),
+        ('reponse', 'Réponse'),
+        ('desabonnement', 'Désabonnement'),
+        ('conversion', 'Conversion'),
+    ]
+    
+    campagne = models.ForeignKey(CampagneMarketing, on_delete=models.CASCADE, related_name='reactions')
+    etudiant = models.ForeignKey(Etudiant, on_delete=models.CASCADE)
+    type_reaction = models.CharField(max_length=20, choices=TYPE_REACTION_CHOICES)
+    date = models.DateTimeField(default=timezone.now)
+    details = models.TextField(blank=True)
+    
+    def __str__(self):
+        return f"{self.etudiant} - {self.type_reaction} ({self.campagne.nom})"
+
+
+class Notification(models.Model):
+    """Système de notifications pour les suivis"""
+    etudiant = models.ForeignKey(Etudiant, on_delete=models.CASCADE, related_name='notifications')
+    titre = models.CharField(max_length=200)
+    message = models.TextField()
+    date_creation = models.DateTimeField(auto_now_add=True)
+    date_echeance = models.DateField(null=True, blank=True)
+    destinataire = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications_recues')
+    lu = models.BooleanField(default=False)
+    priorite = models.IntegerField(default=1)  # 1-5, 5 étant la plus haute
+    
+    def __str__(self):
+        return f"{self.titre} ({self.etudiant})"
+    
+    class Meta:
+        ordering = ['-priorite', 'date_echeance', '-date_creation']
+
+
+# 2. Vues et API (views.py)
+from django.shortcuts import render, get_object_or_404, redirect
+from django.contrib.auth.decorators import login_required
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.db.models import Q, Count
+from rest_framework import viewsets, permissions
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from .models import Etudiant, Interaction, CampagneMarketing, Tag, Notification, ReactionCampagne
+from .serializers import (
+    EtudiantSerializer, InteractionSerializer, CampagneMarketingSerializer,
+    TagSerializer, NotificationSerializer
+)
+
+
+class EtudiantViewSet(viewsets.ModelViewSet):
+    """API pour la gestion des étudiants"""
+    queryset = Etudiant.objects.all()
+    serializer_class = EtudiantSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """Filtrage des étudiants selon différents critères"""
+        queryset = Etudiant.objects.all()
+        statut = self.request.query_params.get('statut', None)
+        niveau = self.request.query_params.get('niveau', None)
+        tags = self.request.query_params.get('tags', None)
+        search = self.request.query_params.get('search', None)
+        
+        if statut:
+            queryset = queryset.filter(statut=statut)
+        if niveau:
+            queryset = queryset.filter(niveau_etudes=niveau)
+        if tags:
+            tag_list = tags.split(',')
+            queryset = queryset.filter(tags__nom__in=tag_list).distinct()
+        if search:
+            queryset = queryset.filter(
+                Q(nom__icontains=search) | 
+                Q(prenom__icontains=search) | 
+                Q(email__icontains=search)
+            )
+        
+        return queryset
+    
+    @action(detail=True, methods=['get'])
+    def interactions(self, request, pk=None):
+        """Récupérer toutes les interactions d'un étudiant"""
+        etudiant = self.get_object()
+        interactions = etudiant.interactions.all()
+        serializer = InteractionSerializer(interactions, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def add_tag(self, request, pk=None):
+        """Ajouter un tag à un étudiant"""
+        etudiant = self.get_object()
+        tag_id = request.data.get('tag_id')
+        
+        if not tag_id:
+            return Response({'error': 'Tag ID is required'}, status=400)
+        
+        try:
+            tag = Tag.objects.get(pk=tag_id)
+            etudiant.tags.add(tag)
+            return Response({'status': 'tag added'})
+        except Tag.DoesNotExist:
+            return Response({'error': 'Tag not found'}, status=404)
+    
+    @action(detail=True, methods=['post'])
+    def remove_tag(self, request, pk=None):
+        """Retirer un tag d'un étudiant"""
+        etudiant = self.get_object()
+        tag_id = request.data.get('tag_id')
+        
+        if not tag_id:
+            return Response({'error': 'Tag ID is required'}, status=400)
+        
+        try:
+            tag = Tag.objects.get(pk=tag_id)
+            etudiant.tags.remove(tag)
+            return Response({'status': 'tag removed'})
+        except Tag.DoesNotExist:
+            return Response({'error': 'Tag not found'}, status=404)
+    
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """Statistiques sur les étudiants"""
+        total = Etudiant.objects.count()
+        par_statut = Etudiant.objects.values('statut').annotate(count=Count('id'))
+        par_niveau = Etudiant.objects.values('niveau_etudes').annotate(count=Count('id'))
+        
+        return Response({
+            'total': total,
+            'par_statut': par_statut,
+            'par_niveau': par_niveau
+        })
+
+
+class InteractionViewSet(viewsets.ModelViewSet):
+    """API pour la gestion des interactions"""
+    queryset = Interaction.objects.all()
+    serializer_class = InteractionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """Filtrage des interactions"""
+        queryset = Interaction.objects.all()
+        etudiant_id = self.request.query_params.get('etudiant', None)
+        type_interaction = self.request.query_params.get('type', None)
+        date_debut = self.request.query_params.get('date_debut', None)
+        date_fin = self.request.query_params.get('date_fin', None)
+        
+        if etudiant_id:
+            queryset = queryset.filter(etudiant_id=etudiant_id)
+        if type_interaction:
+            queryset = queryset.filter(type=type_interaction)
+        if date_debut:
+            queryset = queryset.filter(date__gte=date_debut)
+        if date_fin:
+            queryset = queryset.filter(date__lte=date_fin)
+        
+        return queryset
+    
+    def perform_create(self, serializer):
+        """Enregistrer l'utilisateur qui crée l'interaction"""
+        serializer.save(utilisateur=self.request.user)
+
+
+class CampagneMarketingViewSet(viewsets.ModelViewSet):
+    """API pour la gestion des campagnes marketing"""
+    queryset = CampagneMarketing.objects.all()
+    serializer_class = CampagneMarketingSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @action(detail=True, methods=['post'])
+    def lancer(self, request, pk=None):
+        """Lancer une campagne marketing"""
+        campagne = self.get_object()
+        
+        if campagne.statut != 'planifiee':
+            return Response({'error': 'La campagne doit être planifiée avant de pouvoir être lancée'}, status=400)
+        
+        # Logique pour lancer la campagne
+        campagne.statut = 'en_cours'
+        campagne.date_debut = timezone.now()
+        campagne.save()
+        
+        # Ici, on pourrait appeler un service externe ou une tâche asynchrone
+        
+        return Response({'status': 'campagne lancée'})
+    
+    @action(detail=True, methods=['get'])
+    def statistiques(self, request, pk=None):
+        """Obtenir les statistiques d'une campagne"""
+        campagne = self.get_object()
+        reactions = ReactionCampagne.objects.filter(campagne=campagne)
+        
+        stats = {
+            'total_cibles': campagne.segmentation.count(),
+            'total_reactions': reactions.count(),
+            'par_type': reactions.values('type_reaction').annotate(count=Count('id')),
+        }
+        
+        return Response(stats)
+
+
+class TagViewSet(viewsets.ModelViewSet):
+    """API pour la gestion des tags"""
+    queryset = Tag.objects.all()
+    serializer_class = TagSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @action(detail=True, methods=['get'])
+    def etudiants(self, request, pk=None):
+        """Récupérer tous les étudiants avec ce tag"""
+        tag = self.get_object()
+        etudiants = tag.etudiant_set.all()
+        serializer = EtudiantSerializer(etudiants, many=True)
+        return Response(serializer.data)
+
+
+class NotificationViewSet(viewsets.ModelViewSet):
+    """API pour la gestion des notifications"""
+    queryset = Notification.objects.all()
+    serializer_class = NotificationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """Filtrer les notifications pour l'utilisateur connecté"""
+        return Notification.objects.filter(destinataire=self.request.user)
+    
+    @action(detail=True, methods=['post'])
+    def marquer_comme_lu(self, request, pk=None):
+        """Marquer une notification comme lue"""
+        notification = self.get_object()
+        notification.lu = True
+        notification.save()
+        return Response({'status': 'notification marquée comme lue'})
+
+
+# 3. Serializers (serializers.py)
+from rest_framework import serializers
+from .models import Etudiant, Interaction, CampagneMarketing, Tag, Notification
+
+
+class TagSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Tag
+        fields = '__all__'
+
+
+class EtudiantSerializer(serializers.ModelSerializer):
+    tags = TagSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Etudiant
+        fields = '__all__'
+
+
+class InteractionSerializer(serializers.ModelSerializer):
+    etudiant_nom = serializers.SerializerMethodField()
+    utilisateur_nom = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Interaction
+        fields = '__all__'
+    
+    def get_etudiant_nom(self, obj):
+        return f"{obj.etudiant.prenom} {obj.etudiant.nom}"
+    
+    def get_utilisateur_nom(self, obj):
+        if obj.utilisateur:
+            return obj.utilisateur.get_full_name() or obj.utilisateur.username
+        return None
+
+
+class CampagneMarketingSerializer(serializers.ModelSerializer):
+    segmentation = TagSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = CampagneMarketing
+        fields = '__all__'
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    etudiant_nom = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Notification
+        fields = '__all__'
+    
+    def get_etudiant_nom(self, obj):
+        return f"{obj.etudiant.prenom} {obj.etudiant.nom}"
+
+
+# 4. Fonctions utilitaires pour l'automatisation marketing (services.py)
+
+def calculer_score_engagement(etudiant_id):
+    """Calcule un score d'engagement pour un étudiant basé sur ses interactions"""
+    from .models import Etudiant, Interaction
+    
+    etudiant = Etudiant.objects.get(id=etudiant_id)
+    interactions = Interaction.objects.filter(etudiant=etudiant)
+    
+    # Définir les poids pour chaque type d'interaction
+    poids = {
+        'email': 1,
+        'appel': 3,
+        'rdv': 5,
+        'evenement': 4,
+        'document': 2,
+        'demande': 2,
+        'autre': 1
+    }
+    
+    # Calculer le score total
+    score = 0
+    for interaction in interactions:
+        # Les interactions plus récentes ont plus de poids
+        jours_passes = (timezone.now().date() - interaction.date.date()).days
+        facteur_temps = max(1, 365 - jours_passes) / 365  # Entre 0 et 1, plus proche de 1 si récent
+        
+        # Calculer le score pour cette interaction
+        score += poids.get(interaction.type, 1) * facteur_temps
+    
+    # Mettre à jour le score dans la base de données
+    etudiant.score_engagement = int(score)
+    etudiant.save()
+    
+    return score
+
+
+def segmenter_etudiants(criteres):
+    """
+    Segmente les étudiants selon des critères donnés
+    
+    Exemple de critères:
+    {
+        'statut': ['prospect', 'candidat'],
+        'niveau_etudes': ['bac+3', 'bac+4', 'bac+5'],
+        'pays_origine': ['France', 'Maroc', 'Sénégal'],
+        'score_min': 10,
+        'tags': [1, 3, 5]  # IDs des tags
+    }
+    """
+    from .models import Etudiant, Tag
+    
+    queryset = Etudiant.objects.all()
+    
+    if 'statut' in criteres:
+        queryset = queryset.filter(statut__in=criteres['statut'])
+    
+    if 'niveau_etudes' in criteres:
+        queryset = queryset.filter(niveau_etudes__in=criteres['niveau_etudes'])
+    
+    if 'pays_origine' in criteres:
+        queryset = queryset.filter(pays_origine__in=criteres['pays_origine'])
+    
+    if 'score_min' in criteres:
+        queryset = queryset.filter(score_engagement__gte=criteres['score_min'])
+    
+    if 'tags' in criteres:
+        tags = Tag.objects.filter(id__in=criteres['tags'])
+        for tag in tags:
+            queryset = queryset.filter(tags=tag)
+    
+    return queryset
+
+
+def creer_campagne_automatique(nom, type_campagne, contenu, criteres_segmentation):
+    """Crée une campagne marketing automatique"""
+    from .models import CampagneMarketing, Tag
+    from django.contrib.auth.models import User
+    
+    # Créer la campagne
+    admin = User.objects.filter(is_superuser=True).first()
+    campagne = CampagneMarketing.objects.create(
+        nom=nom,
+        type=type_campagne,
+        contenu=contenu,
+        statut='brouillon',
+        createur=admin
+    )
+    
+    # Ajouter les tags de segmentation
+    if 'tags' in criteres_segmentation:
+        tags = Tag.objects.filter(id__in=criteres_segmentation['tags'])
+        campagne.segmentation.add(*tags)
+    
+    return campagne
+
+
+def envoyer_campagne(campagne_id):
+    """Envoie une campagne aux étudiants ciblés"""
+    from .models import CampagneMarketing, ReactionCampagne
+    
+    campagne = CampagneMarketing.objects.get(id=campagne_id)
+    
+    # Récupérer les critères de segmentation à partir des tags
+    criteres = {
+        'tags': list(campagne.segmentation.values_list('id', flat=True))
+    }
+    
+    # Obtenir les étudiants ciblés
+    etudiants = segmenter_etudiants(criteres)
+    
+    # Simuler l'envoi de la campagne
+    for etudiant in etudiants:
+        # Ici, on enverrait réellement l'email, SMS, etc.
+        # Pour l'exemple, on crée simplement une entrée "ouverture"
+        ReactionCampagne.objects.create(
+            campagne=campagne,
+            etudiant=etudiant,
+            type_reaction='ouverture',
+            details='Simulation d\'envoi'
+        )
+    
+    # Mettre à jour le statut de la campagne
+    campagne.statut = 'en_cours'
+    campagne.date_debut = timezone.now()
+    campagne.save()
+    
+    return len(etudiants)
+
+
+# 5. Configuration des URLs (urls.py)
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from . import views
+
+router = DefaultRouter()
+router.register(r'etudiants', views.EtudiantViewSet)
+router.register(r'interactions', views.InteractionViewSet)
+router.register(r'campagnes', views.CampagneMarketingViewSet)
+router.register(r'tags', views.TagViewSet)
+router.register(r'notifications', views.NotificationViewSet)
+
+urlpatterns = [
+    path('api/', include(router.urls)),
+    # Ajouter ici les URLs pour les vues de l'interface utilisateur
+]
+
+
+# 6. Configuration des tâches asynchrones (tasks.py)
+from celery import shared_task
+from django.utils import timezone
+from .models import Etudiant, CampagneMarketing
+from .services import calculer_score_engagement, envoyer_campagne
+
+
+@shared_task
+def mettre_a_jour_scores_engagement():
+    """Tâche périodique pour mettre à jour les scores d'engagement"""
+    etudiants = Etudiant.objects.all()
+    for etudiant in etudiants:
+        calculer_score_engagement(etudiant.id)
+    return f"Mise à jour des scores terminée pour {etudiants.count()} étudiants"
+
+
+@shared_task
+def executer_campagnes_planifiees():
+    """Vérifie et exécute les campagnes planifiées"""
+    maintenant = timezone.now()
+    campagnes = CampagneMarketing.objects.filter(
+        statut='planifiee',
+        date_debut__lte=maintenant
+    )
+    
+    for campagne in campagnes:
+        nb_etudiants = envoyer_campagne(campagne.id)
+    
+    return f"{campagnes.count()} campagnes exécutées"
+
+
+@shared_task
+def nettoyer_anciennes_notifications():
+    """Supprime les notifications lues trop anciennes"""
+    from .models import Notification
+    
+    date_limite = timezone.now() - timezone.timedelta(days=60)
+    notifications = Notification.objects.filter(
+        lu=True,
+        date_creation__lt=date_limite
+    )
+    
+    count = notifications.count()
+    notifications.delete()
+    
+    return f"{count} anciennes notifications supprimées"
+
+
+# 7. Configuration périodique des tâches (celery_config.py)
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    'mise-a-jour-scores': {
+        'task': 'crm.tasks.mettre_a_jour_scores_engagement',
+        'schedule': crontab(hour=3, minute=0),  # Tous les jours à 3h du matin
+    },
+    'executer-campagnes': {
+        'task': 'crm.tasks.executer_campagnes_planifiees',
+        'schedule': crontab(minute='*/15'),  # Toutes les 15 minutes
+    },
+    'nettoyer-notifications': {
+        'task': 'crm.tasks.nettoyer_anciennes_notifications',
+        'schedule': crontab(day_of_week='sunday', hour=2),  # Chaque dimanche à 2h
+    },
+}
